@@ -1,0 +1,156 @@
+[project]
+name = "repopilot"
+version = "0.1.0"
+description = "RepoPilot Phase 0 —— 可恢复、可验证、具备明确安全边界的本地多智能体代码修复原型"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "pydantic>=2.8,<3.0",
+    "pydantic-settings>=2.4,<3.0",
+    "temporalio>=1.7,<2.0",
+    "sqlalchemy[asyncio]>=2.0,<3.0",
+    "alembic>=1.13,<2.0",
+    "asyncpg>=0.29,<1.0",
+    "structlog>=24.1,<25.0",
+    "opentelemetry-api>=1.26,<2.0",
+    "opentelemetry-sdk>=1.26,<2.0",
+    "minio>=7.2,<8.0",
+    "docker>=7.1,<8.0",
+    "typer>=0.12,<1.0",
+    "httpx>=0.27,<1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "testcontainers>=4.8,<5.0",
+    "ruff>=0.6,<1.0",
+    "mypy>=1.11,<2.0",
+    "import-linter>=2.1,<3.0",
+]
+
+[project.scripts]
+repopilot = "repopilot.cli:main"
+repopilot-api = "repopilot.api.app:run"
+repopilot-worker = "repopilot.infrastructure.temporal.workers:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/repopilot"]
+
+# ---------------------------------------------------------------------------
+# Ruff：格式化 + 静态检查。规则集刻意保守，避免在原型阶段被风格问题拖慢。
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "evals", "scripts"]
+# 设计文档（*.md）中大量 Python 代码块只是接口示意，不是可执行/需要格式化的
+# 源码，排除在 ruff 之外，避免 ruff format 改写文档里的示例代码。
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S"]
+ignore = ["S101"]  # 测试代码允许 assert
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"scripts/**" = ["S603", "S607"]
+
+# ---------------------------------------------------------------------------
+# mypy：仅对 src 强制严格模式；tests/evals 暂不要求。
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+explicit_package_bases = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "docker.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "minio.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "testcontainers.*"
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: 纯内存单元测试，不依赖外部服务",
+    "contract: 针对单一 adapter 的契约测试，可能需要本地服务",
+    "integration: 跨组件集成测试，需要 docker compose 依赖",
+    "security: 安全边界测试",
+    "e2e: 端到端场景测试",
+]
+
+# ---------------------------------------------------------------------------
+# 模块依赖方向：见 PHASE0_IMPLEMENTATION_DESIGN.md 第 6 节。
+# 用 import-linter 在 CI 中强制执行，防止随手加一个 import 破坏分层。
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "repopilot"
+
+[[tool.importlinter.contracts]]
+name = "domain 不依赖任何框架"
+type = "forbidden"
+source_modules = ["repopilot.domain"]
+forbidden_modules = [
+    "fastapi",
+    "temporalio",
+    "sqlalchemy",
+    "docker",
+    "openai",
+    "repopilot.api",
+    "repopilot.infrastructure",
+    "repopilot.workflows",
+    "repopilot.activities",
+]
+
+[[tool.importlinter.contracts]]
+name = "agents 不直接依赖基础设施实现"
+type = "forbidden"
+source_modules = ["repopilot.agents"]
+forbidden_modules = [
+    "repopilot.infrastructure",
+    "sqlalchemy",
+    "docker",
+    "minio",
+]
+
+[[tool.importlinter.contracts]]
+name = "workflows 不做任何外部 I/O（不直接依赖 infrastructure）"
+type = "forbidden"
+source_modules = ["repopilot.workflows"]
+forbidden_modules = [
+    "repopilot.infrastructure",
+    "sqlalchemy",
+    "docker",
+    "minio",
+]
+
+[[tool.importlinter.contracts]]
+name = "整体分层：api/cli -> workflows/activities -> agents/services -> domain"
+type = "layers"
+layers = [
+    "repopilot.api | repopilot.cli",
+    "repopilot.workflows | repopilot.activities",
+    "repopilot.agents | repopilot.services",
+    "repopilot.domain",
+]

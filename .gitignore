@@ -1,0 +1,36 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- 虚拟环境与包管理 ---
+.venv/
+venv/
+uv.lock.bak
+
+# --- 环境变量与密钥（绝不提交真实取值） ---
+.env
+.env.*
+!.env.example
+
+# --- 测试与覆盖率 ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- RepoPilot 运行时数据目录（clone、worktree、沙箱产物） ---
+.repopilot/
+
+# --- IDE ---
+.vscode/*
+!.vscode/settings.json
+.idea/
+
+# --- 数据库/对象存储本地卷 ---
+.docker-data/

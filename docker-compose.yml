@@ -1,0 +1,75 @@
+# 本地开发依赖：PostgreSQL、MinIO、Temporal Server、Temporal UI。
+# 见 PHASE0_IMPLEMENTATION_DESIGN.md 第 4 节。
+#
+# FastAPI 和各 Worker 默认在宿主机通过 `uv run` 启动（方便调试），
+# 不在本文件中定义；只有 sandbox-worker 会访问 Docker Engine，
+# 且是通过宿主机 Docker Socket 直接调用，同样不在这里定义为服务。
+
+name: repopilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: repopilot
+      POSTGRES_PASSWORD: repopilot
+      POSTGRES_DB: repopilot
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U repopilot -d repopilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: repopilot
+      MINIO_ROOT_PASSWORD: repopilot-secret
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: repopilot
+      POSTGRES_PWD: repopilot
+      POSTGRES_SEEDS: postgres
+      DEFAULT_NAMESPACE: repopilot-dev
+    ports:
+      - "127.0.0.1:7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: "http://localhost:8081"
+    ports:
+      - "127.0.0.1:8081:8080"
+
+volumes:
+  pgdata:
+  miniodata:
