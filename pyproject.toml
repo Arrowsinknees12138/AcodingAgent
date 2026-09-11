@@ -65,10 +65,16 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# 测试用的 git fixture helper 直接调用系统 git（跟 scripts/** 的道理一样：
+# 这是受控的本地测试脚手架，不是处理外部输入）。
+"tests/contract/conftest_git.py" = ["S603", "S607"]
 "scripts/**" = ["S603", "S607", "ASYNC240"]
 # alembic 生成的迁移脚本遵循 alembic 自己的模板风格（Union[...]、导入顺序），
 # 不值得每次 autogenerate 之后手动改格式。
 "migrations/versions/**" = ["UP035", "UP007", "I001"]
+# Repository Service 大量使用 pathlib 做本地元数据文件的读写（marker 文件、
+# mkdir），都是轻量本地文件系统操作，不是需要非阻塞处理的重活。
+"src/repopilot/infrastructure/git/repository_service.py" = ["ASYNC240"]
 
 # ---------------------------------------------------------------------------
 # mypy：仅对 src 强制严格模式；tests/evals 暂不要求。
@@ -98,6 +104,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 固定用项目内的 .pytest-tmp 而不是系统临时目录：这台机器上系统临时目录
+# 里遗留的 pytest-of-* 目录出现过权限异常（Access denied，原因不明，
+# 疑似之前某次异常退出留下的带只读位的 git 对象），用项目内目录规避。
+addopts = "--basetemp=.pytest-tmp"
 # 项目只用函数式测试，不用测试类；关掉基于类名前缀的收集，
 # 这样 domain.verification.TestSummary 这类"名字长得像测试类"的领域模型
 # 不会被 pytest 误当成测试类扫描。

@@ -21,7 +21,13 @@
 - [x] Milestone 3：Temporal 最小闭环（`CodeRepairWorkflow` 状态机、
       `update_projection` Activity、Approval Update、取消、Worker 崩溃恢复、
       Query，均以真实 Temporal 测试 Server + 真实 PostgreSQL 验证）
-- [ ] Milestone 4：Repository Service
+- [x] Milestone 4：Repository Service（真实 git mirror clone/worktree/
+      cherry-pick 集成、`git apply --check` 校验、AST 符号索引与接口 Diff、
+      越权路径拒绝、patch 冲突检测；均以真实本地 git 仓库 + MinIO/
+      PostgreSQL 验证）。**尚未接入 Temporal Activity**——`activities/
+      repository.py`、`ingest_task`/`scan_repository` 的仓库体积/文件数
+      限制校验，留到 Milestone 7 真正替换掉 Workflow 里的占位状态跳转时
+      再做，避免在还没有调用方的情况下先搭一层 Activity 包装。
 - [ ] Milestone 5：Sandbox 与 Verification
 - [ ] Milestone 6：Model Gateway 与 Agents
 - [ ] Milestone 7：DAG、Repair 与完整 E2E
