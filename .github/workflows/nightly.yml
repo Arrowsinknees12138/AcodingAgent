@@ -1,0 +1,29 @@
+# 夜间任务（实施设计第 24 节）：跟 PR 门禁分开，运行更慢/更重的验证，
+# 不阻塞日常开发。
+#
+# 全量 E2E 和 20 个任务的 Fake Model 评测要等 Milestone 7/8 对应的测试
+# 套件落地后再加进来；现在先只接入已经实现的 Docker 安全测试。
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 18 * * *" # 每天 UTC 18:00（北京时间凌晨 2 点）
+  workflow_dispatch: {}
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: uv sync
+        run: uv sync --frozen
+
+      - name: Docker security tests
+        run: uv run pytest tests/security -v

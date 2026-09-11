@@ -28,7 +28,13 @@
       repository.py`、`ingest_task`/`scan_repository` 的仓库体积/文件数
       限制校验，留到 Milestone 7 真正替换掉 Workflow 里的占位状态跳转时
       再做，避免在还没有调用方的情况下先搭一层 Activity 包装。
-- [ ] Milestone 5：Sandbox 与 Verification
+- [x] Milestone 5：Sandbox 与 Verification（Docker Sandbox：非 root、
+      `--network none`、只读根文件系统、`--cap-drop ALL`、CPU/内存/PID
+      限制；`timeout --kill-after` 强制超时；`export_changes` 产出兼容
+      `git apply` 的 diff；sealed test bundle 按需注入且不进最终 diff。
+      均以真实 Docker 容器验证：网络隔离、Fork Bomb 遏制、超时、恶意
+      cwd 拒绝、隐藏测试 ACL）。同样**尚未接入 Temporal Activity**，
+      理由同 Milestone 4。
 - [ ] Milestone 6：Model Gateway 与 Agents
 - [ ] Milestone 7：DAG、Repair 与完整 E2E
 - [ ] Milestone 8：评测与交付
@@ -88,6 +94,14 @@ Store 等 adapter，`tests/integration` 额外用 Temporal 的时间跳跃测试
 ```bash
 uv run pytest tests/contract
 uv run pytest tests/integration
+```
+
+`tests/security` 会真的创建/销毁 Docker 容器验证沙箱的安全边界（网络隔离、
+Fork Bomb 遏制、超时强制终止、恶意路径拒绝、密封测试 ACL）；CI 里放在
+nightly（`.github/workflows/nightly.yml`），不在每个 PR 都跑：
+
+```bash
+uv run pytest tests/security
 ```
 
 启动 orchestration Worker（连接 `docker compose up -d postgres temporal`

@@ -64,10 +64,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106"]
-# 测试用的 git fixture helper 直接调用系统 git（跟 scripts/** 的道理一样：
-# 这是受控的本地测试脚手架，不是处理外部输入）。
-"tests/contract/conftest_git.py" = ["S603", "S607"]
+# 测试代码经常需要直接调用本地 git/其他 CLI 做断言（受控输入，不是外部
+# 输入），也不需要区分同步/异步阻塞调用的性能顾虑。
+"tests/**" = ["S101", "S105", "S106", "S603", "S607", "ASYNC221", "ASYNC240"]
 "scripts/**" = ["S603", "S607", "ASYNC240"]
 # alembic 生成的迁移脚本遵循 alembic 自己的模板风格（Union[...]、导入顺序），
 # 不值得每次 autogenerate 之后手动改格式。

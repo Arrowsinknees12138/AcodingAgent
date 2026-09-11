@@ -1,9 +1,9 @@
 # PR 质量门禁（实施设计第 24 节）。
 #
-# 夜间任务（Docker 安全测试、全量 E2E、20 个任务的 Fake Model 评测）依赖
-# Milestone 5/7/8 才会存在的测试套件，还没有加进来；等那些测试套件落地
-# 后再补一个 schedule 触发的 nightly workflow，不在这里先放一堆会一直
-# 失败或者什么都不做的占位 job。
+# Docker 安全测试放在 nightly.yml，不在这里——第 24 节明确把它归类为
+# "夜间执行"项，不是每个 PR 都要跑的门禁。全量 E2E、20 个任务的 Fake
+# Model 评测依赖 Milestone 7/8 才会存在的测试套件，等落地后再加进
+# nightly workflow。
 #
 # `scripts/replay_workflows.py tests/fixtures/histories` 同样先不接入：
 # 还没有提交任何历史样本（需要先用 scripts/export_workflow_history.py
