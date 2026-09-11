@@ -18,7 +18,9 @@
 - [x] Milestone 2：领域模型与存储（Pydantic Strict Model、SQLAlchemy 2 Async
       模型 + Alembic 初始迁移、MinIO Artifact Store、内容寻址幂等写入、
       读取 ACL）
-- [ ] Milestone 3：Temporal 最小闭环
+- [x] Milestone 3：Temporal 最小闭环（`CodeRepairWorkflow` 状态机、
+      `update_projection` Activity、Approval Update、取消、Worker 崩溃恢复、
+      Query，均以真实 Temporal 测试 Server + 真实 PostgreSQL 验证）
 - [ ] Milestone 4：Repository Service
 - [ ] Milestone 5：Sandbox 与 Verification
 - [ ] Milestone 6：Model Gateway 与 Agents
@@ -73,10 +75,20 @@ uv run pytest tests/unit
 对应 `scripts/dev.sh check`。
 
 `tests/contract` 用 testcontainers 拉起临时 PostgreSQL/MinIO 验证 Artifact
-Store 等 adapter，需要本机 Docker Engine 可用：
+Store 等 adapter，`tests/integration` 额外用 Temporal 的时间跳跃测试 Server
+验证 `CodeRepairWorkflow`（状态机、Update、取消、Worker 崩溃恢复、Query）；
+两者都需要本机 Docker Engine 可用：
 
 ```bash
 uv run pytest tests/contract
+uv run pytest tests/integration
+```
+
+启动 orchestration Worker（连接 `docker compose up -d postgres temporal`
+之后）：
+
+```bash
+uv run repopilot-worker orchestration
 ```
 
 ## 数据库迁移

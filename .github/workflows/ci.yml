@@ -1,0 +1,50 @@
+# PR 质量门禁（实施设计第 24 节）。
+#
+# 夜间任务（Docker 安全测试、全量 E2E、20 个任务的 Fake Model 评测）依赖
+# Milestone 5/7/8 才会存在的测试套件，还没有加进来；等那些测试套件落地
+# 后再补一个 schedule 触发的 nightly workflow，不在这里先放一堆会一直
+# 失败或者什么都不做的占位 job。
+#
+# `scripts/replay_workflows.py tests/fixtures/histories` 同样先不接入：
+# 还没有提交任何历史样本（需要先用 scripts/export_workflow_history.py
+# 从一次真实 Run 导出），对着空目录跑只会得到一个没有意义的失败。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: "3.12"
+
+      - name: uv sync
+        run: uv sync --frozen
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: mypy
+        run: uv run mypy src
+
+      - name: import-linter
+        run: uv run lint-imports
+
+      - name: unit + contract tests
+        run: uv run pytest tests/unit tests/contract -q
+
+      - name: integration tests
+        run: uv run pytest tests/integration -q

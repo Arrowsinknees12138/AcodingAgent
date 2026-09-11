@@ -34,3 +34,6 @@ htmlcov/
 
 # --- 数据库/对象存储本地卷 ---
 .docker-data/
+
+# --- 本地 Claude Code harness 状态（非项目内容） ---
+.claude/

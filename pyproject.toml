@@ -65,7 +65,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
-"scripts/**" = ["S603", "S607"]
+"scripts/**" = ["S603", "S607", "ASYNC240"]
 # alembic 生成的迁移脚本遵循 alembic 自己的模板风格（Union[...]、导入顺序），
 # 不值得每次 autogenerate 之后手动改格式。
 "migrations/versions/**" = ["UP035", "UP007", "I001"]
@@ -118,9 +118,9 @@ markers = [
 root_package = "repopilot"
 include_external_packages = true
 
-# 注意：`workflows`、`activities`、`agents` 包会在 Milestone 3/6 陆续加入；
-# 对应的 forbidden/layers contract 在那些包创建时一并加回来——import-linter
-# 要求 contract 引用的模块必须存在，提前写好在这里反而会一直挂红。
+# 注意：`agents` 包会在 Milestone 6 加入；对应的 forbidden contract 在那个
+# 包创建时再加回来——import-linter 要求 contract 引用的模块必须存在，提前
+# 写好在这里反而会一直挂红。
 [[tool.importlinter.contracts]]
 name = "domain 不依赖任何框架"
 type = "forbidden"
@@ -146,6 +146,24 @@ forbidden_modules = [
     "minio",
 ]
 
+[[tool.importlinter.contracts]]
+name = "workflows 不做任何外部 I/O（可以引用 activities 的函数签名用于调度）"
+type = "forbidden"
+source_modules = ["repopilot.workflows"]
+forbidden_modules = [
+    "repopilot.infrastructure",
+    "sqlalchemy",
+    "docker",
+    "minio",
+    "asyncpg",
+]
+
+# `workflows` 和 `activities` 不放进这个 layers 契约：Temporal 的用法本身
+# 就要求 workflow 代码引用 activity 的函数签名来调度它（见
+# workflows/code_repair.py 的 execute_activity_method 调用），这是正常的
+# 双向引用，不是分层违规；import-linter 的 layers 契约会把同一层里用 `|`
+# 分隔的模块当成"互相独立、不能引用对方"，所以两者不能被硬塞进同一层。
+# 它们各自不依赖 infrastructure 这条边界，由上面的 forbidden 契约保证。
 [[tool.importlinter.contracts]]
 name = "整体分层：api/cli -> services -> domain"
 type = "layers"
