@@ -15,8 +15,9 @@ services:
       POSTGRES_USER: repopilot
       POSTGRES_PASSWORD: repopilot
       POSTGRES_DB: repopilot
+    # 宿主机映射到 5433，避免和本机可能已经在跑的原生 PostgreSQL（5432）冲突。
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:

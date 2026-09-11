@@ -15,7 +15,9 @@
 
 - [x] Milestone 1：仓库骨架与质量门禁（uv、Ruff、mypy、pytest、docker-compose、
       Settings、结构化日志、health endpoints）
-- [ ] Milestone 2：领域模型与存储
+- [x] Milestone 2：领域模型与存储（Pydantic Strict Model、SQLAlchemy 2 Async
+      模型 + Alembic 初始迁移、MinIO Artifact Store、内容寻址幂等写入、
+      读取 ACL）
 - [ ] Milestone 3：Temporal 最小闭环
 - [ ] Milestone 4：Repository Service
 - [ ] Milestone 5：Sandbox 与 Verification
@@ -64,10 +66,31 @@ Windows PowerShell：
 uv run ruff format --check .
 uv run ruff check .
 uv run mypy src
+uv run lint-imports          # 依赖方向：见实施设计第 6 节
 uv run pytest tests/unit
 ```
 
 对应 `scripts/dev.sh check`。
+
+`tests/contract` 用 testcontainers 拉起临时 PostgreSQL/MinIO 验证 Artifact
+Store 等 adapter，需要本机 Docker Engine 可用：
+
+```bash
+uv run pytest tests/contract
+```
+
+## 数据库迁移
+
+```bash
+docker compose up -d postgres
+uv run alembic upgrade head
+```
+
+新增/修改 SQLAlchemy 模型后：
+
+```bash
+uv run alembic revision --autogenerate -m "描述这次变更"
+```
 
 ## 已知限制（Phase 0）
 

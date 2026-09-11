@@ -18,9 +18,11 @@ switch ($Command) {
     "test"      { uv run pytest @Rest }
     "lint"      { uv run ruff format --check .; if ($?) { uv run ruff check . } }
     "typecheck" { uv run mypy src }
+    "imports"   { uv run lint-imports }
     "check"     {
         & $PSCommandPath lint
         if ($?) { & $PSCommandPath typecheck }
+        if ($?) { & $PSCommandPath imports }
         if ($?) { & $PSCommandPath test tests/unit }
     }
     default {
@@ -35,7 +37,8 @@ switch ($Command) {
   test       运行 pytest
   lint       运行 ruff
   typecheck  运行 mypy
-  check      lint + typecheck + 单元测试
+  imports    运行 import-linter（依赖方向）
+  check      lint + typecheck + imports + 单元测试
 "@
     }
 }

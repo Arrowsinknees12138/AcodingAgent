@@ -25,8 +25,10 @@ case "$cmd" in
     uv run ruff format --check . && uv run ruff check . ;;
   typecheck)
     uv run mypy src ;;
+  imports)
+    uv run lint-imports ;;
   check)
-    "$0" lint && "$0" typecheck && "$0" test tests/unit ;;
+    "$0" lint && "$0" typecheck && "$0" imports && "$0" test tests/unit ;;
   *)
     cat <<EOF
 用法: scripts/dev.sh <command>
@@ -39,7 +41,8 @@ case "$cmd" in
   test       运行 pytest
   lint       运行 ruff
   typecheck  运行 mypy
-  check      lint + typecheck + 单元测试
+  imports    运行 import-linter（依赖方向）
+  check      lint + typecheck + imports + 单元测试
 EOF
     ;;
 esac

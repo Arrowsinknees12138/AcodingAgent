@@ -43,7 +43,9 @@ class Settings(BaseSettings):
     api_port: int = 8080
 
     # --- PostgreSQL ---
-    postgres_dsn: str = "postgresql+asyncpg://repopilot:repopilot@localhost:5432/repopilot"
+    # 本地 docker-compose 把容器内 5432 映射到宿主机 5433，避免与本机
+    # 可能已经在运行的原生 PostgreSQL（默认 5432）冲突。
+    postgres_dsn: str = "postgresql+asyncpg://repopilot:repopilot@localhost:5433/repopilot"
 
     # --- Temporal ---
     temporal_address: str = "localhost:7233"

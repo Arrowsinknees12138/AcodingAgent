@@ -58,11 +58,17 @@ extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "S"]
-ignore = ["S101"]  # 测试代码允许 assert
+ignore = [
+    "S101",  # 测试代码允许 assert
+    "UP042", # 设计文档明确要求 `class Foo(str, Enum)`，不是 StrEnum
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
 "scripts/**" = ["S603", "S607"]
+# alembic 生成的迁移脚本遵循 alembic 自己的模板风格（Union[...]、导入顺序），
+# 不值得每次 autogenerate 之后手动改格式。
+"migrations/versions/**" = ["UP035", "UP007", "I001"]
 
 # ---------------------------------------------------------------------------
 # mypy：仅对 src 强制严格模式；tests/evals 暂不要求。
@@ -92,6 +98,10 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# 项目只用函数式测试，不用测试类；关掉基于类名前缀的收集，
+# 这样 domain.verification.TestSummary 这类"名字长得像测试类"的领域模型
+# 不会被 pytest 误当成测试类扫描。
+python_classes = "DisableClassBasedTests_"
 markers = [
     "unit: 纯内存单元测试，不依赖外部服务",
     "contract: 针对单一 adapter 的契约测试，可能需要本地服务",
@@ -106,7 +116,11 @@ markers = [
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_package = "repopilot"
+include_external_packages = true
 
+# 注意：`workflows`、`activities`、`agents` 包会在 Milestone 3/6 陆续加入；
+# 对应的 forbidden/layers contract 在那些包创建时一并加回来——import-linter
+# 要求 contract 引用的模块必须存在，提前写好在这里反而会一直挂红。
 [[tool.importlinter.contracts]]
 name = "domain 不依赖任何框架"
 type = "forbidden"
@@ -119,14 +133,12 @@ forbidden_modules = [
     "openai",
     "repopilot.api",
     "repopilot.infrastructure",
-    "repopilot.workflows",
-    "repopilot.activities",
 ]
 
 [[tool.importlinter.contracts]]
-name = "agents 不直接依赖基础设施实现"
+name = "services 不直接依赖基础设施实现"
 type = "forbidden"
-source_modules = ["repopilot.agents"]
+source_modules = ["repopilot.services"]
 forbidden_modules = [
     "repopilot.infrastructure",
     "sqlalchemy",
@@ -135,22 +147,10 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "workflows 不做任何外部 I/O（不直接依赖 infrastructure）"
-type = "forbidden"
-source_modules = ["repopilot.workflows"]
-forbidden_modules = [
-    "repopilot.infrastructure",
-    "sqlalchemy",
-    "docker",
-    "minio",
-]
-
-[[tool.importlinter.contracts]]
-name = "整体分层：api/cli -> workflows/activities -> agents/services -> domain"
+name = "整体分层：api/cli -> services -> domain"
 type = "layers"
 layers = [
     "repopilot.api | repopilot.cli",
-    "repopilot.workflows | repopilot.activities",
-    "repopilot.agents | repopilot.services",
+    "repopilot.services",
     "repopilot.domain",
 ]
