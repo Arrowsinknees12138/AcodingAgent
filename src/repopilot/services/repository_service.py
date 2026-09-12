@@ -32,6 +32,14 @@ class PatchPathDeniedError(RuntimeError):
         self.denied_paths = denied_paths
 
 
+class DependencyChangeDeniedError(RuntimeError):
+    """默认禁止 patch 修改 Python 依赖清单，除非任务显式授权。"""
+
+    def __init__(self, manifest_paths: tuple[str, ...]) -> None:
+        super().__init__(f"任务未授权依赖变更: {', '.join(manifest_paths)}")
+        self.manifest_paths = manifest_paths
+
+
 class PatchApplyFailedError(RuntimeError):
     """对应 `ErrorCode.PATCH_APPLY_FAILED`：`git apply --check` 未通过、AST 解析失败等。"""
 
@@ -63,6 +71,7 @@ class RepositoryService(Protocol):
         proposal_ref: ArtifactRef,
         *,
         allowed_write_paths: tuple[str, ...],
+        allow_dependency_changes: bool = False,
     ) -> ArtifactRef: ...
 
     async def final_diff(self, run_id: UUID) -> ArtifactRef: ...

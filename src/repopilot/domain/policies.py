@@ -124,6 +124,19 @@ def resolve_approval_policy(
     return ResolvedApprovalPolicy(risk_level=risk_level, stages=stages, source="risk_based")
 
 
+def dependency_manifest_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """返回会改变 Python 依赖解析结果的受控清单文件。"""
+    manifests: list[str] = []
+    for path in paths:
+        normalized = path.replace("\\", "/").removeprefix("./")
+        name = normalized.rsplit("/", 1)[-1].lower()
+        if name in {"pyproject.toml", "uv.lock", "setup.py", "setup.cfg"} or (
+            name.startswith("requirements") and name.endswith((".txt", ".in"))
+        ):
+            manifests.append(normalized)
+    return tuple(sorted(set(manifests)))
+
+
 class PolicyContext(StrictModel):
     tenant_id: UUID
     run_id: UUID

@@ -26,6 +26,7 @@ from repopilot.domain.tasks import BudgetInput, TaskSpec
 from repopilot.infrastructure.artifacts.minio import MinioArtifactStore
 from repopilot.infrastructure.git.repository_service import GitRepositoryService
 from repopilot.services.repository_service import (
+    DependencyChangeDeniedError,
     PatchApplyFailedError,
     PatchConflictError,
     PatchPathDeniedError,
@@ -161,6 +162,40 @@ async def test_integrate_patch_rejects_path_outside_allowlist(
             proposal_ref,
             allowed_write_paths=("pkg/foo.py",),  # bar.py 不在允许列表里
         )
+
+
+async def test_integrate_patch_requires_explicit_dependency_change_authorization(
+    repository_service: GitRepositoryService,
+    origin_repo: tuple[Path, str],
+    artifact_store: MinioArtifactStore,
+) -> None:
+    origin_path, base_revision = origin_repo
+    run_id = uuid4()
+    task = _make_task_spec(
+        run_id=run_id, repository_url=str(origin_path), base_revision=base_revision
+    )
+    await repository_service.snapshot(task)
+    patch_bytes, touched_paths = make_patch(
+        origin_path,
+        base_revision,
+        {"pyproject.toml": '[project]\nname = "demo"\ndependencies = ["httpx"]\n'},
+    )
+    proposal_ref = await _store_patch_proposal(
+        artifact_store, run_id, base_revision, patch_bytes, touched_paths
+    )
+
+    with pytest.raises(DependencyChangeDeniedError):
+        await repository_service.integrate_patch(
+            proposal_ref,
+            allowed_write_paths=("pyproject.toml",),
+        )
+
+    integrated_ref = await repository_service.integrate_patch(
+        proposal_ref,
+        allowed_write_paths=("pyproject.toml",),
+        allow_dependency_changes=True,
+    )
+    assert integrated_ref.kind is ArtifactKind.INTEGRATED_PATCH
 
 
 async def test_integrate_patch_applies_and_downstream_context_sees_new_interface(

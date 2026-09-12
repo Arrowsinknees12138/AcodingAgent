@@ -17,6 +17,7 @@ from repopilot.domain.policies import (
     DependencyPolicy,
     QaPolicy,
     classify_risk,
+    dependency_manifest_paths,
     resolve_approval_policy,
 )
 
@@ -83,3 +84,20 @@ def test_dependency_policy_is_official_pypi_lockfile_and_cache_by_default() -> N
 def test_standard_qa_cannot_omit_required_check() -> None:
     with pytest.raises(ValidationError):
         QaPolicy(required=("acceptance_tests", "targeted_tests"))
+
+
+def test_dependency_manifests_are_detected_across_supported_layouts() -> None:
+    assert dependency_manifest_paths(
+        (
+            "src/app.py",
+            "pyproject.toml",
+            "requirements-dev.txt",
+            "config/requirements.in",
+            ".\\uv.lock",
+        )
+    ) == (
+        "config/requirements.in",
+        "pyproject.toml",
+        "requirements-dev.txt",
+        "uv.lock",
+    )

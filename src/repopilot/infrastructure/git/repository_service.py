@@ -41,11 +41,13 @@ from repopilot.domain.artifacts import (
 )
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.plans import DeveloperContext, IntegratedPatch, PatchProposal, WorkItem
+from repopilot.domain.policies import dependency_manifest_paths
 from repopilot.domain.tasks import TaskSpec
 from repopilot.infrastructure.git.cli import GitCli, GitCommandError
 from repopilot.logging import get_logger
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.repository_service import (
+    DependencyChangeDeniedError,
     PatchApplyFailedError,
     PatchConflictError,
     PatchPathDeniedError,
@@ -344,6 +346,7 @@ class GitRepositoryService:
         proposal_ref: ArtifactRef,
         *,
         allowed_write_paths: tuple[str, ...],
+        allow_dependency_changes: bool = False,
     ) -> ArtifactRef:
         # `ArtifactKind` 没有单独给 `PatchProposal` 这个小型包装对象分配
         # 种类（第 7.2 节的枚举里只有承载原始 diff 内容的 PATCH 和承载
@@ -359,6 +362,9 @@ class GitRepositoryService:
         denied = set(proposal.touched_paths) - set(allowed_write_paths)
         if denied or len(proposal.touched_paths) > self._max_touched_files:
             raise PatchPathDeniedError(tuple(sorted(denied)) or proposal.touched_paths)
+        changed_manifests = dependency_manifest_paths(proposal.touched_paths)
+        if changed_manifests and not allow_dependency_changes:
+            raise DependencyChangeDeniedError(changed_manifests)
 
         patch_bytes = await self._artifact_store.get_bytes(proposal.patch_ref, caller)
         if len(patch_bytes) > self._max_patch_bytes:
