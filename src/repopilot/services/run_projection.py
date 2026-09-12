@@ -23,6 +23,7 @@ class ProjectionEvent(StrictModel):
     base_revision: str | None = None
     plan_version: int = 0
     model_calls: int = 0
+    sequence: int = 0
     occurred_at: datetime
 
 

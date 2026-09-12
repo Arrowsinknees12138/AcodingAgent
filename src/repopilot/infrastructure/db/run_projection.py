@@ -7,14 +7,14 @@
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from repopilot.domain.enums import RunStatus
-from repopilot.infrastructure.db.models import RunProjection
+from repopilot.infrastructure.db.models import AuditEvent, RunProjection
 from repopilot.services.run_projection import ProjectionEvent, is_terminal
 
 
@@ -47,8 +47,23 @@ class PostgresRunProjectionStore:
                 "terminal_at": stmt.excluded.terminal_at,
             },
         )
+        audit_stmt = (
+            insert(AuditEvent)
+            .values(
+                event_id=uuid5(event.run_id, f"projection:{event.sequence}:{event.status.value}"),
+                tenant_id=event.tenant_id,
+                run_id=event.run_id,
+                event_type="run.status_changed",
+                actor_type="workflow",
+                actor_id=None,
+                payload={"status": event.status.value, "sequence": event.sequence},
+                created_at=event.occurred_at,
+            )
+            .on_conflict_do_nothing(index_elements=[AuditEvent.event_id])
+        )
         async with self._session_factory() as session:
             await session.execute(stmt)
+            await session.execute(audit_stmt)
             await session.commit()
 
     async def get(self, run_id: UUID) -> ProjectionEvent | None:

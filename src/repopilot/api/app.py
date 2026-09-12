@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from repopilot.api.routes import health, runs
+from repopilot.api.routes import artifacts, health, runs
 from repopilot.config import Settings, get_settings
 from repopilot.infrastructure.artifacts.minio import MinioArtifactStore, build_minio_client
 from repopilot.infrastructure.db.engine import get_session_factory
@@ -64,6 +64,7 @@ def create_app(
         app.state.run_control = run_control
     app.include_router(health.router)
     app.include_router(runs.router)
+    app.include_router(artifacts.router)
     return app
 
 

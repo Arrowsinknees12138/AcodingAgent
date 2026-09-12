@@ -71,6 +71,7 @@ class CodeRepairWorkflow:
         self._processed_approval_ids: set[UUID] = set()
         self._approvals: dict[str, ApprovalRequest] = {}
         self._base_revision: str | None = None
+        self._projection_sequence = 0
 
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
@@ -243,6 +244,7 @@ class CodeRepairWorkflow:
             workflow_id=self._workflow_id,
             status=self._status,
             base_revision=self._base_revision,
+            sequence=self._projection_sequence,
             occurred_at=workflow.now(),
         )
         await workflow.execute_activity_method(
@@ -252,3 +254,4 @@ class CodeRepairWorkflow:
             schedule_to_start_timeout=_PROJECTION_SCHEDULE_TO_START,
             retry_policy=_PROJECTION_RETRY_POLICY,
         )
+        self._projection_sequence += 1

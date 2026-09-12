@@ -101,6 +101,32 @@ def status(run_id: UUID) -> None:
 
 
 @app.command()
+def events(run_id: UUID) -> None:
+    """列出 Run 的审计事件。"""
+    try:
+        response = httpx.get(
+            f"{_base_url()}/v1/runs/{run_id}/events", headers=_headers(), timeout=5.0
+        )
+    except httpx.HTTPError as exc:
+        typer.secho(f"API 不可达：{exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    _print_response(response)
+
+
+@app.command()
+def artifacts(run_id: UUID) -> None:
+    """列出 Run 的 Artifact 元数据。"""
+    try:
+        response = httpx.get(
+            f"{_base_url()}/v1/runs/{run_id}/artifacts", headers=_headers(), timeout=5.0
+        )
+    except httpx.HTTPError as exc:
+        typer.secho(f"API 不可达：{exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    _print_response(response)
+
+
+@app.command()
 def approve(
     run_id: UUID,
     kind: Annotated[

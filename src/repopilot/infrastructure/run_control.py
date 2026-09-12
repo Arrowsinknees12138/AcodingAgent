@@ -12,18 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from temporalio.client import Client
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
-from repopilot.domain.artifacts import ArtifactMetadata
+from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.tasks import CreateRunRequest
-from repopilot.infrastructure.db.models import IdempotencyKey
+from repopilot.infrastructure.db.models import Artifact, AuditEvent, IdempotencyKey
 from repopilot.infrastructure.temporal.client import (
     start_code_repair_workflow,
     workflow_id_for,
 )
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.run_control import (
+    ArtifactDownload,
+    ArtifactView,
     IdempotencyConflictError,
     RunControl,
+    RunEventView,
     RunNotFoundError,
     RunUnavailableError,
     RunView,
@@ -125,6 +128,88 @@ class PostgresTemporalRunControl(RunControl):
             await handle.cancel()
         except Exception as exc:
             raise RunUnavailableError("取消请求未送达 Workflow") from exc
+
+    async def list_events(self, run_id: UUID) -> tuple[RunEventView, ...]:
+        await self._require_owned_run(run_id)
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.tenant_id == self._tenant_id,
+                    AuditEvent.run_id == run_id,
+                )
+                .order_by(AuditEvent.created_at, AuditEvent.event_id)
+            )
+        return tuple(
+            RunEventView(
+                event_id=row.event_id,
+                event_type=row.event_type,
+                actor_type=row.actor_type,
+                actor_id=row.actor_id,
+                payload=row.payload,
+                created_at=row.created_at,
+            )
+            for row in rows
+        )
+
+    async def list_artifacts(self, run_id: UUID) -> tuple[ArtifactView, ...]:
+        await self._require_owned_run(run_id)
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(Artifact)
+                .where(Artifact.tenant_id == self._tenant_id, Artifact.run_id == run_id)
+                .order_by(Artifact.created_at, Artifact.artifact_id)
+            )
+        return tuple(self._artifact_view(row) for row in rows)
+
+    async def download_artifact(self, artifact_id: UUID) -> ArtifactDownload:
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(Artifact).where(
+                    Artifact.tenant_id == self._tenant_id,
+                    Artifact.artifact_id == artifact_id,
+                )
+            )
+        if row is None:
+            raise RunNotFoundError(f"Artifact {artifact_id} 不存在")
+        await self._require_owned_run(row.run_id)
+        view = self._artifact_view(row)
+        ref = ArtifactRef(
+            artifact_id=row.artifact_id,
+            run_id=row.run_id,
+            tenant_id=row.tenant_id,
+            kind=ArtifactKind(row.kind),
+            schema_version=row.schema_version,
+            object_key=row.object_key,
+            sha256=row.sha256,
+            size_bytes=row.size_bytes,
+            base_revision=row.base_revision,
+            input_artifact_ids=(),
+            created_at=row.created_at,
+        )
+        content = await self._artifact_store.get_bytes(
+            ref,
+            ArtifactCaller(
+                tenant_id=self._tenant_id,
+                run_id=row.run_id,
+                role=None,
+                service="api",
+            ),
+        )
+        return ArtifactDownload(artifact=view, content=content)
+
+    @staticmethod
+    def _artifact_view(row: Artifact) -> ArtifactView:
+        return ArtifactView(
+            artifact_id=row.artifact_id,
+            run_id=row.run_id,
+            kind=row.kind,
+            schema_version=row.schema_version,
+            sha256=row.sha256,
+            size_bytes=row.size_bytes,
+            base_revision=row.base_revision,
+            created_at=row.created_at,
+        )
 
     async def _reserve_idempotency_key(
         self,

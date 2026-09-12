@@ -12,8 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from repopilot.api.dependencies import authenticate, get_run_control
 from repopilot.api.schemas import CreateRunBody
 from repopilot.services.run_control import (
+    ArtifactView,
     IdempotencyConflictError,
     RunControl,
+    RunEventView,
     RunNotFoundError,
     RunUnavailableError,
     RunView,
@@ -60,6 +62,26 @@ async def create_run(
 async def get_run(run_id: UUID, control: Control, _tenant_id: Authenticated) -> RunView:
     try:
         return await control.get(run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{run_id}/events", response_model=list[RunEventView])
+async def list_events(
+    run_id: UUID, control: Control, _tenant_id: Authenticated
+) -> tuple[RunEventView, ...]:
+    try:
+        return await control.list_events(run_id)
+    except RunNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{run_id}/artifacts", response_model=list[ArtifactView])
+async def list_artifacts(
+    run_id: UUID, control: Control, _tenant_id: Authenticated
+) -> tuple[ArtifactView, ...]:
+    try:
+        return await control.list_artifacts(run_id)
     except RunNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
