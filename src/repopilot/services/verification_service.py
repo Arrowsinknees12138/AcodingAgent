@@ -312,9 +312,7 @@ class CandidateVerificationService:
                 run_id=snapshot_ref.run_id,
                 base_revision=candidate_revision,
                 schema_version="1",
-                input_artifact_ids=tuple(
-                    ref.artifact_id for ref in input_refs if ref is not None
-                ),
+                input_artifact_ids=tuple(ref.artifact_id for ref in input_refs if ref is not None),
             ),
         )
 

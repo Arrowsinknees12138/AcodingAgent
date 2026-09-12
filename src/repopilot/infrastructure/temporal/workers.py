@@ -78,9 +78,7 @@ async def _run_repository_worker() -> None:
         tenant_id=settings.local_tenant_id,
     )
     ingest = IngestActivities(artifact_store=artifacts, repository=repository)
-    repository_activities = RepositoryActivities(
-        artifact_store=artifacts, repository=repository
-    )
+    repository_activities = RepositoryActivities(artifact_store=artifacts, repository=repository)
     worker = Worker(
         client,
         task_queue=REPOSITORY_TASK_QUEUE,

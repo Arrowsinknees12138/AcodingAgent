@@ -203,7 +203,9 @@ async def test_candidate_verification_reports_only_new_failures_as_regressions()
                 failed_test_ids=("tests/test_app.py::test_known",),
             ),
             details_ref=details_ref,
-        ).model_dump_json().encode(),
+        )
+        .model_dump_json()
+        .encode(),
         metadata,
     )
     sandbox = FakeSandbox(

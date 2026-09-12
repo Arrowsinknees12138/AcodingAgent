@@ -23,7 +23,5 @@ class RepositoryActivities:
             role=None,
             service="repository",
         )
-        task = TaskSpec.model_validate_json(
-            await self._artifacts.get_bytes(task_spec_ref, caller)
-        )
+        task = TaskSpec.model_validate_json(await self._artifacts.get_bytes(task_spec_ref, caller))
         return await self._repository.snapshot(task)

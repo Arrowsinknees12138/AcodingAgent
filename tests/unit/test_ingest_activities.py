@@ -32,9 +32,7 @@ class FakeRepository:
         allowed_write_paths: tuple[str, ...],
         allow_dependency_changes: bool = False,
     ) -> ArtifactRef:
-        raise AssertionError(
-            (proposal_ref, allowed_write_paths, allow_dependency_changes)
-        )
+        raise AssertionError((proposal_ref, allowed_write_paths, allow_dependency_changes))
 
     async def final_diff(self, run_id: UUID) -> ArtifactRef:
         raise AssertionError(run_id)

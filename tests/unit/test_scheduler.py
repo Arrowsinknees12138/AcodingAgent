@@ -77,12 +77,10 @@ def test_schedule_releases_downstream_only_after_upstreams() -> None:
 def test_schedule_chunks_independent_work_at_four() -> None:
     ids = tuple(uuid4() for _ in range(6))
     files = tuple(
-        _file(item_id, f"src/{index}.py", owner=f"dev-{index}")
-        for index, item_id in enumerate(ids)
+        _file(item_id, f"src/{index}.py", owner=f"dev-{index}") for index, item_id in enumerate(ids)
     )
     items = tuple(
-        _item(item_id, f"src/{index}.py", owner=f"dev-{index}")
-        for index, item_id in enumerate(ids)
+        _item(item_id, f"src/{index}.py", owner=f"dev-{index}") for index, item_id in enumerate(ids)
     )
     schedule = build_schedule(_plan(files), items)
     assert tuple(len(wave) for wave in schedule.waves) == (4, 2)
