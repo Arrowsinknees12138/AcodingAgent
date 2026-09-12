@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Literal, Protocol
 from uuid import UUID
 
+from pydantic import Field
+
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 
@@ -18,8 +20,8 @@ from repopilot.domain.artifacts import ArtifactRef
 class RunCommandRequest(StrictModel):
     executable: Literal["python", "pytest", "ruff", "mypy"]
     args: tuple[str, ...]
-    cwd: str
-    timeout_seconds: int
+    cwd: str = Field(min_length=1)
+    timeout_seconds: int = Field(gt=0, le=600)
 
 
 class SandboxSpec(StrictModel):

@@ -127,9 +127,6 @@ markers = [
 root_package = "repopilot"
 include_external_packages = true
 
-# 注意：`agents` 包会在 Milestone 6 加入；对应的 forbidden contract 在那个
-# 包创建时再加回来——import-linter 要求 contract 引用的模块必须存在，提前
-# 写好在这里反而会一直挂红。
 [[tool.importlinter.contracts]]
 name = "domain 不依赖任何框架"
 type = "forbidden"
@@ -142,6 +139,19 @@ forbidden_modules = [
     "openai",
     "repopilot.api",
     "repopilot.infrastructure",
+]
+
+[[tool.importlinter.contracts]]
+name = "agents 和 tools 只依赖领域与服务契约"
+type = "forbidden"
+source_modules = ["repopilot.agents", "repopilot.tools"]
+forbidden_modules = [
+    "repopilot.infrastructure",
+    "fastapi",
+    "temporalio",
+    "sqlalchemy",
+    "docker",
+    "minio",
 ]
 
 [[tool.importlinter.contracts]]
