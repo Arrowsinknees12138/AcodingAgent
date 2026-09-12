@@ -24,7 +24,10 @@ from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput, QaActivities
 from repopilot.activities.repository import RepositoryActivities
-from repopilot.activities.verification import VerificationActivities
+from repopilot.activities.verification import (
+    VerificationActivities,
+    VerifySealedTestsInput,
+)
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ApprovalMode, RiskLevel, RunStatus
@@ -164,7 +167,7 @@ class CodeRepairWorkflow:
                     return await self._finalize(workflow_input, RunStatus.REJECTED)
 
             await self._transition(workflow_input, RunStatus.DESIGNING_TESTS)
-            await workflow.execute_activity_method(
+            test_plan_ref = await workflow.execute_activity_method(
                 QaActivities.design_sealed_tests,
                 DesignSealedTestsInput(
                     task_spec_ref=task_spec_ref,
@@ -175,6 +178,24 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_MODEL_START_TO_CLOSE,
                 retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
             )
+            sealed_test_result = await workflow.execute_activity_method(
+                VerificationActivities.verify_sealed_tests_on_base,
+                VerifySealedTestsInput(
+                    snapshot_ref=snapshot_ref,
+                    test_plan_ref=test_plan_ref,
+                ),
+                task_queue=SANDBOX_TASK_QUEUE,
+                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            if not sealed_test_result.valid:
+                approval = await self._wait_for_approval(
+                    workflow_input,
+                    kind="test",
+                    status=RunStatus.WAITING_TEST_APPROVAL,
+                )
+                if approval.decision == "reject":
+                    return await self._finalize(workflow_input, RunStatus.REJECTED)
 
             if approval_stages.execution is ApprovalMode.MANUAL:
                 approval = await self._wait_for_approval(

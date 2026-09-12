@@ -17,7 +17,15 @@ from repopilot.domain.artifacts import (
     RepositorySnapshot,
 )
 from repopilot.domain.enums import ArtifactKind
-from repopilot.domain.verification import BaselineReport, TestSummary, VerificationReport
+from repopilot.domain.verification import (
+    AcceptanceTestMapping,
+    BaselineReport,
+    SealedTestBaselineReport,
+    TestCaseSpec,
+    TestPlan,
+    TestSummary,
+    VerificationReport,
+)
 from repopilot.services.sandbox_service import (
     CommandResult,
     RunCommandRequest,
@@ -27,6 +35,7 @@ from repopilot.services.verification_service import (
     BaselineVerificationService,
     CandidateVerificationService,
     InvalidTestConfigurationError,
+    SealedTestBaselineService,
     SourceInventory,
     discover_test_command,
 )
@@ -244,6 +253,192 @@ async def test_candidate_verification_reports_only_new_failures_as_regressions()
     assert {finding.category for finding in report.findings} == {"test", "regression"}
     assert sandbox.spec.network_enabled is False
     assert sandbox.destroyed is True
+
+
+async def test_sealed_test_baseline_accepts_declared_pass_fail_and_skip() -> None:
+    store = MemoryArtifactStore()
+    tenant_id, run_id = uuid4(), uuid4()
+    metadata = ArtifactMetadata(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        base_revision="a" * 40,
+        schema_version="1",
+    )
+    source_ref = await store.put_bytes(
+        ArtifactKind.SOURCE_ARCHIVE,
+        _archive({"src/app.py": b"VALUE = 1"}),
+        metadata,
+    )
+    symbol_ref = await store.put_bytes(ArtifactKind.SYMBOL_INDEX, b"[]", metadata)
+    snapshot_ref = await store.put_bytes(
+        ArtifactKind.REPOSITORY_SNAPSHOT,
+        _snapshot(source_ref, symbol_ref).model_dump_json().encode(),
+        metadata,
+    )
+    bundle_ref = await store.put_bytes(
+        ArtifactKind.TEST_BUNDLE,
+        _archive({".repopilot/sealed_tests/test_task.py": b""}),
+        metadata,
+    )
+    plan_ref = await store.put_bytes(
+        ArtifactKind.TEST_PLAN,
+        TestPlan(
+            test_plan_id=uuid4(),
+            origin="sealed",
+            test_bundle_ref=bundle_ref,
+            cases=(
+                TestCaseSpec(
+                    name="test_existing",
+                    purpose="regression",
+                    expected_on_base="pass",
+                ),
+                TestCaseSpec(
+                    name="test_reproduces_bug",
+                    purpose="bug_reproduction",
+                    expected_on_base="fail",
+                ),
+                TestCaseSpec(
+                    name="test_optional",
+                    purpose="acceptance",
+                    expected_on_base="skip",
+                ),
+            ),
+            acceptance_mapping=(
+                AcceptanceTestMapping(
+                    acceptance_criterion="fixed",
+                    test_names=("test_reproduces_bug",),
+                ),
+            ),
+        )
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
+    sandbox = FakeSandbox(
+        store,
+        metadata,
+        stdout=(
+            b".repopilot/sealed_tests/test_task.py::test_existing PASSED [ 33%]\n"
+            b".repopilot/sealed_tests/test_task.py::test_reproduces_bug FAILED [ 66%]\n"
+            b".repopilot/sealed_tests/test_task.py::test_optional SKIPPED [100%]\n"
+            b"1 failed, 1 passed, 1 skipped in 0.1s"
+        ),
+    )
+
+    report_ref = await SealedTestBaselineService(
+        artifact_store=store,
+        sandbox_service=sandbox,
+    ).verify(snapshot_ref=snapshot_ref, test_plan_ref=plan_ref)
+    report = SealedTestBaselineReport.model_validate_json(
+        await store.get_bytes(
+            report_ref,
+            ArtifactCaller(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                role=None,
+                service="test",
+            ),
+        )
+    )
+
+    assert report.valid is True
+    assert report.case_outcomes == {
+        "test_existing": "passed",
+        "test_reproduces_bug": "failed",
+        "test_optional": "skipped",
+    }
+    assert report.mismatches == ()
+    assert sandbox.spec.test_bundle_ref == bundle_ref
+    assert sandbox.spec.network_enabled is False
+    assert sandbox.command.args == ("-m", "pytest", "-vv", ".repopilot/sealed_tests")
+    assert sandbox.destroyed is True
+
+
+async def test_sealed_test_baseline_rejects_missing_or_wrong_outcomes() -> None:
+    store = MemoryArtifactStore()
+    tenant_id, run_id = uuid4(), uuid4()
+    metadata = ArtifactMetadata(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        base_revision="a" * 40,
+        schema_version="1",
+    )
+    source_ref = await store.put_bytes(
+        ArtifactKind.SOURCE_ARCHIVE,
+        _archive({"src/app.py": b"VALUE = 1"}),
+        metadata,
+    )
+    symbol_ref = await store.put_bytes(ArtifactKind.SYMBOL_INDEX, b"[]", metadata)
+    snapshot_ref = await store.put_bytes(
+        ArtifactKind.REPOSITORY_SNAPSHOT,
+        _snapshot(source_ref, symbol_ref).model_dump_json().encode(),
+        metadata,
+    )
+    bundle_ref = await store.put_bytes(ArtifactKind.TEST_BUNDLE, _archive({}), metadata)
+    plan_ref = await store.put_bytes(
+        ArtifactKind.TEST_PLAN,
+        TestPlan(
+            test_plan_id=uuid4(),
+            origin="sealed",
+            test_bundle_ref=bundle_ref,
+            cases=(
+                TestCaseSpec(
+                    name="test_should_fail",
+                    purpose="bug_reproduction",
+                    expected_on_base="fail",
+                ),
+                TestCaseSpec(
+                    name="test_missing",
+                    purpose="acceptance",
+                    expected_on_base="pass",
+                ),
+            ),
+            acceptance_mapping=(
+                AcceptanceTestMapping(
+                    acceptance_criterion="fixed",
+                    test_names=("test_should_fail",),
+                ),
+            ),
+        )
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
+    sandbox = FakeSandbox(
+        store,
+        metadata,
+        stdout=(
+            b".repopilot/sealed_tests/test_task.py::test_should_fail PASSED [100%]\n"
+            b"1 passed in 0.1s"
+        ),
+        exit_code=0,
+    )
+
+    report_ref = await SealedTestBaselineService(
+        artifact_store=store,
+        sandbox_service=sandbox,
+    ).verify(snapshot_ref=snapshot_ref, test_plan_ref=plan_ref)
+    report = SealedTestBaselineReport.model_validate_json(
+        await store.get_bytes(
+            report_ref,
+            ArtifactCaller(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                role=None,
+                service="test",
+            ),
+        )
+    )
+
+    assert report.valid is False
+    assert report.case_outcomes == {
+        "test_should_fail": "passed",
+        "test_missing": "missing",
+    }
+    assert report.mismatches == (
+        "test_should_fail: expected failed, observed passed",
+        "test_missing: expected passed, observed missing",
+    )
 
 
 def _dummy_ref(kind: ArtifactKind) -> ArtifactRef:

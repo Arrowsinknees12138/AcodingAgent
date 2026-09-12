@@ -18,6 +18,8 @@ from repopilot.domain.artifacts import (
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.verification import (
     BaselineReport,
+    SealedTestBaselineReport,
+    TestPlan,
     TestSummary,
     VerificationFinding,
     VerificationReport,
@@ -32,6 +34,14 @@ from repopilot.services.sandbox_service import (
 
 _PYTEST_COUNT_RE = re.compile(r"(\d+)\s+(passed|failed|skipped)")
 _PYTEST_FAILED_ID_RE = re.compile(r"^FAILED\s+([^\s]+)", re.MULTILINE)
+_PYTEST_VERBOSE_OUTCOME_RE = re.compile(
+    r"^([^\s]+::[^\s]+)\s+(PASSED|FAILED|SKIPPED)(?:\s|$)", re.MULTILINE
+)
+_EXPECTED_BASE_OUTCOME = {
+    "pass": "passed",
+    "fail": "failed",
+    "skip": "skipped",
+}
 
 
 class TestCommandNotFoundError(RuntimeError):
@@ -185,6 +195,131 @@ class BaselineVerificationService:
             skipped=counts["skipped"],
             failed_test_ids=tuple(dict.fromkeys(_PYTEST_FAILED_ID_RE.findall(combined))),
         )
+
+
+class SealedTestBaselineService:
+    """Run generated tests on the untouched base and verify declared expectations."""
+
+    def __init__(
+        self,
+        *,
+        artifact_store: ArtifactStore,
+        sandbox_service: SandboxService,
+        image: str = "python:3.12-slim",
+        timeout_seconds: int = 600,
+    ) -> None:
+        self._artifact_store = artifact_store
+        self._sandbox = sandbox_service
+        self._image = image
+        self._timeout_seconds = timeout_seconds
+
+    async def verify(self, *, snapshot_ref: ArtifactRef, test_plan_ref: ArtifactRef) -> ArtifactRef:
+        if (
+            snapshot_ref.run_id != test_plan_ref.run_id
+            or snapshot_ref.tenant_id != test_plan_ref.tenant_id
+        ):
+            raise ValueError("sealed test baseline 输入 Artifact scope 不一致")
+        caller = ArtifactCaller(
+            tenant_id=snapshot_ref.tenant_id,
+            run_id=snapshot_ref.run_id,
+            role=None,
+            service="verification",
+        )
+        snapshot = RepositorySnapshot.model_validate_json(
+            await self._artifact_store.get_bytes(snapshot_ref, caller)
+        )
+        plan = TestPlan.model_validate_json(
+            await self._artifact_store.get_bytes(test_plan_ref, caller)
+        )
+        command = RunCommandRequest(
+            executable="python",
+            args=("-m", "pytest", "-vv", ".repopilot/sealed_tests"),
+            cwd="/workspace",
+            timeout_seconds=self._timeout_seconds,
+        )
+        sandbox_id = await self._sandbox.create(
+            SandboxSpec(
+                run_id=snapshot_ref.run_id,
+                work_item_id=None,
+                image=self._image,
+                source_archive_ref=snapshot.source_archive_ref,
+                test_bundle_ref=plan.test_bundle_ref,
+                network_enabled=False,
+                wall_time_seconds=self._timeout_seconds,
+            )
+        )
+        try:
+            result = await self._sandbox.execute(sandbox_id, command)
+        finally:
+            await self._sandbox.destroy(sandbox_id)
+
+        stdout = (await self._artifact_store.get_bytes(result.stdout_ref, caller)).decode(
+            "utf-8", errors="replace"
+        )
+        stderr = (await self._artifact_store.get_bytes(result.stderr_ref, caller)).decode(
+            "utf-8", errors="replace"
+        )
+        combined = f"{stdout}\n{stderr}"
+        counts = {"passed": 0, "failed": 0, "skipped": 0}
+        for count, kind in _PYTEST_COUNT_RE.findall(combined):
+            counts[kind] = max(counts[kind], int(count))
+        summary = TestSummary(
+            passed=counts["passed"],
+            failed=counts["failed"],
+            skipped=counts["skipped"],
+            failed_test_ids=tuple(dict.fromkeys(_PYTEST_FAILED_ID_RE.findall(combined))),
+        )
+        observed = {
+            test_id: outcome.lower()
+            for test_id, outcome in _PYTEST_VERBOSE_OUTCOME_RE.findall(combined)
+        }
+        case_outcomes: dict[str, str] = {}
+        mismatches: list[str] = []
+        for case in plan.cases:
+            outcome = _find_case_outcome(case.name, observed)
+            case_outcomes[case.name] = outcome
+            expected = _EXPECTED_BASE_OUTCOME.get(case.expected_on_base, case.expected_on_base)
+            if case.expected_on_base != "not_applicable" and outcome != expected:
+                mismatches.append(f"{case.name}: expected {expected}, observed {outcome}")
+        runnable = result.exit_code in {0, 1} and not result.timed_out and not result.oom_killed
+        if not runnable:
+            mismatches.append(f"sealed test command not runnable (exit={result.exit_code})")
+        report = SealedTestBaselineReport.model_validate(
+            {
+                "base_revision": snapshot.base_revision,
+                "valid": runnable and not mismatches,
+                "command": (command.executable, *command.args),
+                "summary": summary,
+                "case_outcomes": case_outcomes,
+                "mismatches": tuple(mismatches),
+                "details_ref": result.stdout_ref,
+            }
+        )
+        return await self._artifact_store.put_bytes(
+            ArtifactKind.SEALED_TEST_BASELINE_REPORT,
+            report.model_dump_json().encode(),
+            ArtifactMetadata(
+                tenant_id=snapshot_ref.tenant_id,
+                run_id=snapshot_ref.run_id,
+                base_revision=snapshot.base_revision,
+                schema_version="1",
+                input_artifact_ids=(
+                    snapshot_ref.artifact_id,
+                    test_plan_ref.artifact_id,
+                    plan.test_bundle_ref.artifact_id,
+                    result.stdout_ref.artifact_id,
+                    result.stderr_ref.artifact_id,
+                ),
+            ),
+        )
+
+
+def _find_case_outcome(case_name: str, observed: dict[str, str]) -> str:
+    for test_id, outcome in observed.items():
+        leaf = test_id.rsplit("::", 1)[-1]
+        if test_id == case_name or leaf == case_name or leaf.startswith(f"{case_name}["):
+            return outcome
+    return "missing"
 
 
 def _parse_pyproject(content: bytes | None) -> dict[str, object]:

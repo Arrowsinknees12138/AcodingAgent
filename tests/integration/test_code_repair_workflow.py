@@ -363,7 +363,10 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
         sandbox_worker = Worker(
             env.client,
             task_queue=SANDBOX_TASK_QUEUE,
-            activities=[fake_pipeline.verify_baseline],
+            activities=[
+                fake_pipeline.verify_baseline,
+                fake_pipeline.verify_sealed_tests_on_base,
+            ],
         )
         model_worker = Worker(
             env.client,

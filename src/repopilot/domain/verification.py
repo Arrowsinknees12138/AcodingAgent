@@ -83,6 +83,16 @@ class BaselineReport(StrictModel):
     details_ref: ArtifactRef
 
 
+class SealedTestBaselineReport(StrictModel):
+    base_revision: str
+    valid: bool
+    command: tuple[str, ...]
+    summary: TestSummary
+    case_outcomes: dict[str, Literal["passed", "failed", "skipped", "missing"]]
+    mismatches: tuple[str, ...]
+    details_ref: ArtifactRef
+
+
 class VerificationFinding(StrictModel):
     finding_id: UUID
     file_path: str | None

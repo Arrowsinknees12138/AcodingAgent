@@ -36,7 +36,10 @@ from repopilot.services.task_queues import (
     REPOSITORY_TASK_QUEUE,
     SANDBOX_TASK_QUEUE,
 )
-from repopilot.services.verification_service import BaselineVerificationService
+from repopilot.services.verification_service import (
+    BaselineVerificationService,
+    SealedTestBaselineService,
+)
 from repopilot.workflows.code_repair import CodeRepairWorkflow
 
 _KNOWN_QUEUES = ("orchestration", "model", "repository", "sandbox")
@@ -112,12 +115,14 @@ async def _run_sandbox_worker() -> None:
         pypi_egress_network=settings.pypi_egress_network,
     )
     verification = VerificationActivities(
-        BaselineVerificationService(artifact_store=artifacts, sandbox_service=sandbox)
+        BaselineVerificationService(artifact_store=artifacts, sandbox_service=sandbox),
+        sealed=SealedTestBaselineService(artifact_store=artifacts, sandbox_service=sandbox),
+        artifact_store=artifacts,
     )
     worker = Worker(
         client,
         task_queue=SANDBOX_TASK_QUEUE,
-        activities=[verification.verify_baseline],
+        activities=[verification.verify_baseline, verification.verify_sealed_tests_on_base],
     )
     get_logger(component="worker", queue="sandbox").info(
         "worker.starting", task_queue=SANDBOX_TASK_QUEUE

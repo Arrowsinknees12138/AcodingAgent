@@ -26,6 +26,7 @@ from repopilot.activities.ingest import FinalizeTaskSpecInput
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput
+from repopilot.activities.verification import VerifySealedTestsInput, VerifySealedTestsResult
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RiskLevel
 from repopilot.domain.tasks import IngestResult
@@ -91,6 +92,18 @@ class FakePipelineActivities:
     async def verify_baseline(self, snapshot_ref: ArtifactRef) -> ArtifactRef:
         return _derived_ref(snapshot_ref, ArtifactKind.BASELINE_REPORT)
 
+    @activity.defn(name="verify_sealed_tests_on_base")
+    async def verify_sealed_tests_on_base(
+        self, payload: VerifySealedTestsInput
+    ) -> VerifySealedTestsResult:
+        return VerifySealedTestsResult(
+            report_ref=_derived_ref(
+                payload.test_plan_ref,
+                ArtifactKind.SEALED_TEST_BASELINE_REPORT,
+            ),
+            valid=True,
+        )
+
     @activity.defn(name="plan_change")
     async def plan_change(self, payload: PlanChangeInput) -> PlanChangeResult:
         return PlanChangeResult(
@@ -147,7 +160,10 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
         sandbox_worker = Worker(
             env.client,
             task_queue=SANDBOX_TASK_QUEUE,
-            activities=[fake_pipeline.verify_baseline],
+            activities=[
+                fake_pipeline.verify_baseline,
+                fake_pipeline.verify_sealed_tests_on_base,
+            ],
         )
         model_worker = Worker(
             env.client,
