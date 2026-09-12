@@ -76,6 +76,22 @@ class RiskFlag(str, Enum):
     PROMPT_INJECTION_SUSPECTED = "prompt_injection_suspected"
 
 
+class RiskLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ApprovalMode(str, Enum):
+    AUTOMATIC = "automatic"
+    MANUAL = "manual"
+
+
+class ApprovalPolicyMode(str, Enum):
+    RISK_BASED = "risk_based"
+    CUSTOM = "custom"
+
+
 # Run 的终态集合；workflows 层用它判断是否需要继续调度。
 TERMINAL_RUN_STATUSES = frozenset(
     {RunStatus.SUCCEEDED, RunStatus.REJECTED, RunStatus.FAILED, RunStatus.CANCELLED}

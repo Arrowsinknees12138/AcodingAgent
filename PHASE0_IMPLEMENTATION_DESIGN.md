@@ -47,6 +47,25 @@ Phase 0 不再进行框架选型，直接采用以下技术基线：
 
 依赖版本在首次初始化时通过 `uv lock` 固定。本文只固定主版本线，不把具体 patch 版本写死在 Markdown 中。
 
+### 2.1 2026-09-12 策略决策（覆盖本文后续冲突描述）
+
+以下策略是本轮确认后的权威规则；本文后续章节若仍保留旧的“低风险布尔开关”或
+更宽松的依赖安装描述，以本节为准：
+
+- 风险审批：Low 全自动；Medium 在计划完成后等待 Plan approval；High 在计划完成后
+  等待 Plan approval，并在测试设计完成后等待 Execution approval。
+- 自定义审批：创建 Run 时可选择 `custom` 模式，逐项指定 `plan`、`execution`、
+  `delivery` 是 `automatic` 还是 `manual`。未选择自定义模式时使用上述风险规则。
+- 依赖策略：只允许官方 PyPI（`https://pypi.org/simple`）；允许读取已提交的 lockfile，
+  允许使用包缓存；默认禁止新增依赖，只有任务输入显式声明需要依赖变更时才允许。
+  依赖解析/下载只允许发生在 Build Sandbox，Runtime Sandbox 仍然禁止联网。
+- QA 默认且当前唯一等级为 `standard`，强制执行 `acceptance_tests`、
+  `targeted_tests`、`scope_check`，缺少任一检查即不能通过。
+- Reviewer 只有以下类别可以阻断：不满足 acceptance criteria、修改超出任务范围、
+  明显 regression、安全问题、明显错误处理问题、破坏 API contract、新增不必要依赖、
+  hack 绕过测试、修改测试掩盖 bug。变量命名、可选重构、docstring 和轻微风格问题只能
+  COMMENT，不得 BLOCK。
+
 ## 3. Phase 0 范围
 
 ### 3.1 必须实现

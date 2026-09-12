@@ -18,6 +18,7 @@ from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import RunStatus
 from repopilot.domain.errors import ErrorInfo
+from repopilot.domain.policies import ApprovalPolicy, DependencyPolicy, QaPolicy
 
 _GITHUB_URL_RE = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+$")
 _FULL_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -53,6 +54,9 @@ class CreateRunRequest(StrictModel):
     requirement: str = Field(min_length=1, max_length=200_000)
     acceptance_criteria: tuple[str, ...] | None = None
     budget: BudgetInput
+    approval_policy: ApprovalPolicy = ApprovalPolicy()
+    dependency_policy: DependencyPolicy = DependencyPolicy()
+    qa: QaPolicy = QaPolicy()
 
     @field_validator("acceptance_criteria")
     @classmethod
@@ -78,6 +82,9 @@ class TaskSpec(StrictModel):
     acceptance_criteria_source: Literal["structured", "heuristic", "approved"]
     policy_profile: str
     budget: BudgetInput
+    approval_policy: ApprovalPolicy = ApprovalPolicy()
+    dependency_policy: DependencyPolicy = DependencyPolicy()
+    qa: QaPolicy = QaPolicy()
 
     @field_validator("base_revision")
     @classmethod
