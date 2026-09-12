@@ -23,13 +23,13 @@ from repopilot.infrastructure.db.engine import get_session_factory
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
 from repopilot.infrastructure.git.repository_service import GitRepositoryService
 from repopilot.infrastructure.sandbox.docker import DockerSandboxService
-from repopilot.infrastructure.temporal.client import (
+from repopilot.infrastructure.temporal.client import connect
+from repopilot.logging import configure_logging, get_logger
+from repopilot.services.task_queues import (
     ORCHESTRATION_TASK_QUEUE,
     REPOSITORY_TASK_QUEUE,
     SANDBOX_TASK_QUEUE,
-    connect,
 )
-from repopilot.logging import configure_logging, get_logger
 from repopilot.services.verification_service import BaselineVerificationService
 from repopilot.workflows.code_repair import CodeRepairWorkflow
 

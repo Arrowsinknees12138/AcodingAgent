@@ -1,11 +1,8 @@
 """`CodeRepairWorkflow`（实施设计第 8 节）。
 
-Milestone 3 范围：只验证 Temporal 编排机制本身——状态机、Update、取消、
-Worker 崩溃恢复、Query——不接入真实的 ingest/plan/develop/verify/review
-Activity。状态序列本身完整走完 8.6 节定义的正常路径（INGESTING ->
-BASELINING -> PLANNING -> DESIGNING_TESTS -> EXECUTING -> VERIFYING ->
-REVIEWING -> ...），每一步只是还没有换成真正的 Activity 调用；没有 DAG
-调度、没有真实补丁，这些在 Milestone 4~7 陆续接入。
+当前已接入真实 ingest、repository scan、baseline verification Activity；
+Planner/QA/Developer/Reviewer 仍保留状态占位，等待对应角色 Activity 接线。
+状态序列完整遵循 8.6 节，不通过额外捷径跳过审批或终态清理闸口。
 
 `workflows` 层不允许任何外部 I/O（第 6 节）：这里唯一的副作用是通过
 `workflow.execute_activity_method` 调度 `update_projection` Activity，
@@ -22,7 +19,10 @@ import temporalio.exceptions
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
 from repopilot.activities.projections import ProjectionActivities
+from repopilot.activities.repository import RepositoryActivities
+from repopilot.activities.verification import VerificationActivities
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ApprovalMode, RiskLevel, RunStatus
@@ -33,12 +33,16 @@ from repopilot.domain.policies import (
     resolve_approval_policy,
 )
 from repopilot.services.run_projection import ProjectionEvent
+from repopilot.services.task_queues import REPOSITORY_TASK_QUEUE, SANDBOX_TASK_QUEUE
 from repopilot.workflows.transitions import validate_transition
 from repopilot.workflows.updates import ApprovalKind, ApprovalRequest, validate_approval
 
 _PROJECTION_RETRY_POLICY = RetryPolicy(maximum_attempts=5)
 _PROJECTION_START_TO_CLOSE = timedelta(seconds=30)
 _PROJECTION_SCHEDULE_TO_START = timedelta(seconds=30)
+_SERVICE_ACTIVITY_RETRY_POLICY = RetryPolicy(maximum_attempts=3)
+_REPOSITORY_START_TO_CLOSE = timedelta(minutes=10)
+_SANDBOX_START_TO_CLOSE = timedelta(minutes=15)
 
 
 class CodeRepairWorkflowInput(StrictModel):
@@ -65,7 +69,8 @@ class CodeRepairWorkflow:
         self._status = RunStatus.QUEUED
         self._workflow_id = ""
         self._processed_approval_ids: set[UUID] = set()
-        self._approval_decisions: dict[str, str] = {}
+        self._approvals: dict[str, ApprovalRequest] = {}
+        self._base_revision: str | None = None
 
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
@@ -74,34 +79,75 @@ class CodeRepairWorkflow:
         await self._record_projection(workflow_input)  # 记录初始 QUEUED
 
         try:
-            # Milestone 3 依次走完 8.6 节定义的正常状态序列（INGESTING ->
-            # ... -> REVIEWING），只是每一步都还没有接真正的 Activity——
-            # 真正的 ingest_task/scan_repository/plan_change/design_sealed_tests/
-            # develop_patch/verify_candidate/review_candidate 在 Milestone
-            # 4~7 陆续替换掉这里的直接跳转。状态机本身（transitions.py）
-            # 是完整、真实的，不能为了"先跑通"而抄近路创造文档里不存在的边。
+            # ingest/scan/baseline 已是真实 Activity；后半段角色 Activity 会在
+            # 产物协议齐备后逐项替换状态占位。
             await self._transition(workflow_input, RunStatus.INGESTING)
+            ingest_result = await workflow.execute_activity_method(
+                IngestActivities.ingest_task,
+                workflow_input.create_request_ref,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            self._base_revision = ingest_result.base_revision
+            task_spec_ref = ingest_result.task_spec_ref
+            if ingest_result.requires_requirements_approval:
+                approval = await self._wait_for_approval(
+                    workflow_input,
+                    kind="requirements",
+                    status=RunStatus.WAITING_REQUIREMENTS_APPROVAL,
+                )
+                if approval.decision == "reject":
+                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+                assert approval.replacement_acceptance_criteria is not None
+                task_spec_ref = await workflow.execute_activity_method(
+                    IngestActivities.finalize_task_spec,
+                    FinalizeTaskSpecInput(
+                        create_request_ref=workflow_input.create_request_ref,
+                        base_revision=ingest_result.base_revision,
+                        acceptance_criteria=approval.replacement_acceptance_criteria,
+                    ),
+                    task_queue=REPOSITORY_TASK_QUEUE,
+                    start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                )
+            if task_spec_ref is None:
+                raise RuntimeError("ingest_task 未返回可执行的 TaskSpec")
+            snapshot_ref = await workflow.execute_activity_method(
+                RepositoryActivities.scan_repository,
+                task_spec_ref,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
             await self._transition(workflow_input, RunStatus.BASELINING)
+            await workflow.execute_activity_method(
+                VerificationActivities.verify_baseline,
+                snapshot_ref,
+                task_queue=SANDBOX_TASK_QUEUE,
+                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
             await self._transition(workflow_input, RunStatus.PLANNING)
 
             if approval_stages.plan is ApprovalMode.MANUAL:
-                approved = await self._wait_for_approval(
+                approval = await self._wait_for_approval(
                     workflow_input,
                     kind="plan",
                     status=RunStatus.WAITING_PLAN_APPROVAL,
                 )
-                if not approved:
+                if approval.decision == "reject":
                     return await self._finalize(workflow_input, RunStatus.REJECTED)
 
             await self._transition(workflow_input, RunStatus.DESIGNING_TESTS)
 
             if approval_stages.execution is ApprovalMode.MANUAL:
-                approved = await self._wait_for_approval(
+                approval = await self._wait_for_approval(
                     workflow_input,
                     kind="execution",
                     status=RunStatus.WAITING_EXECUTION_APPROVAL,
                 )
-                if not approved:
+                if approval.decision == "reject":
                     return await self._finalize(workflow_input, RunStatus.REJECTED)
 
             await self._transition(workflow_input, RunStatus.EXECUTING)
@@ -111,12 +157,12 @@ class CodeRepairWorkflow:
             if approval_stages.delivery is ApprovalMode.AUTOMATIC:
                 return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
 
-            approved = await self._wait_for_approval(
+            approval = await self._wait_for_approval(
                 workflow_input,
                 kind="delivery",
                 status=RunStatus.WAITING_DELIVERY_APPROVAL,
             )
-            if not approved:
+            if approval.decision == "reject":
                 return await self._finalize(workflow_input, RunStatus.REJECTED)
             return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
         except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
@@ -137,7 +183,7 @@ class CodeRepairWorkflow:
             already_processed_ids=frozenset(self._processed_approval_ids),
         )
         self._processed_approval_ids.add(request.approval_id)
-        self._approval_decisions[request.kind] = request.decision
+        self._approvals[request.kind] = request
 
     @staticmethod
     def _resolve_approval_stages(
@@ -165,10 +211,10 @@ class CodeRepairWorkflow:
         *,
         kind: ApprovalKind,
         status: RunStatus,
-    ) -> bool:
+    ) -> ApprovalRequest:
         await self._transition(workflow_input, status)
-        await workflow.wait_condition(lambda: kind in self._approval_decisions)
-        return self._approval_decisions[kind] == "approve"
+        await workflow.wait_condition(lambda: kind in self._approvals)
+        return self._approvals[kind]
 
     async def _transition(
         self, workflow_input: CodeRepairWorkflowInput, new_status: RunStatus
@@ -196,6 +242,7 @@ class CodeRepairWorkflow:
             tenant_id=workflow_input.tenant_id,
             workflow_id=self._workflow_id,
             status=self._status,
+            base_revision=self._base_revision,
             occurred_at=workflow.now(),
         )
         await workflow.execute_activity_method(

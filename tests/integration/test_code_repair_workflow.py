@@ -31,13 +31,15 @@ from repopilot.infrastructure.temporal.client import (
     workflow_id_for,
 )
 from repopilot.infrastructure.temporal.converter import data_converter
+from repopilot.services.task_queues import REPOSITORY_TASK_QUEUE, SANDBOX_TASK_QUEUE
 from repopilot.workflows.code_repair import CodeRepairWorkflow, CodeRepairWorkflowInput
 from repopilot.workflows.updates import ApprovalRequest
+from tests.integration.conftest import FakePipelineActivities
 
 pytestmark = pytest.mark.integration
 
 
-def _fake_create_request_ref() -> ArtifactRef:
+def _fake_create_request_ref(*, missing_acceptance_criteria: bool = False) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
         run_id=uuid4(),
@@ -46,7 +48,7 @@ def _fake_create_request_ref() -> ArtifactRef:
         schema_version="1",
         object_key="fake/key",
         sha256="a" * 64,
-        size_bytes=1,
+        size_bytes=0 if missing_acceptance_criteria else 1,
         base_revision=None,
         input_artifact_ids=(),
         created_at=datetime.now(UTC),
@@ -97,6 +99,35 @@ async def test_run_completes_when_auto_approved(temporal_client: Client) -> None
 
     status = await handle.query(CodeRepairWorkflow.get_status)
     assert status == RunStatus.SUCCEEDED
+
+
+async def test_missing_acceptance_criteria_requires_requirements_approval(
+    temporal_client: Client,
+) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(missing_acceptance_criteria=True),
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_REQUIREMENTS_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="requirements",
+            decision="approve",
+            actor_id="human-1",
+            reason="criteria reviewed",
+            replacement_acceptance_criteria=("approved criterion",),
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
 
 
 async def test_medium_risk_requires_plan_approval(temporal_client: Client) -> None:
@@ -319,6 +350,17 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
     projection_activities = ProjectionActivities(PostgresRunProjectionStore(session_factory))
 
     async with await WorkflowEnvironment.start_time_skipping(data_converter=data_converter) as env:
+        fake_pipeline = FakePipelineActivities()
+        repository_worker = Worker(
+            env.client,
+            task_queue=REPOSITORY_TASK_QUEUE,
+            activities=[fake_pipeline.ingest_task, fake_pipeline.scan_repository],
+        )
+        sandbox_worker = Worker(
+            env.client,
+            task_queue=SANDBOX_TASK_QUEUE,
+            activities=[fake_pipeline.verify_baseline],
+        )
         workflow_input = _make_input(auto_approve_low_risk=False)
         first_worker = Worker(
             env.client,
@@ -327,42 +369,45 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
             activities=[projection_activities.update_projection],
             max_cached_workflows=0,
         )
-        async with first_worker:
-            handle = await env.client.start_workflow(
-                CodeRepairWorkflow.run,
-                workflow_input,
-                id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        async with repository_worker, sandbox_worker:
+            async with first_worker:
+                handle = await env.client.start_workflow(
+                    CodeRepairWorkflow.run,
+                    workflow_input,
+                    id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+                    task_queue=ORCHESTRATION_TASK_QUEUE,
+                )
+
+                async def _status() -> RunStatus:
+                    return await handle.query(  # type: ignore[no-any-return]
+                        CodeRepairWorkflow.get_status
+                    )
+
+                for _ in range(50):
+                    if await _status() == RunStatus.WAITING_DELIVERY_APPROVAL:
+                        break
+                else:
+                    pytest.fail("Run 没有在预期时间内进入 WAITING_DELIVERY_APPROVAL")
+            # `async with first_worker` 退出 = 第一个 Worker 已经彻底停止轮询。
+
+            second_worker = Worker(
+                env.client,
                 task_queue=ORCHESTRATION_TASK_QUEUE,
+                workflows=[CodeRepairWorkflow],
+                activities=[projection_activities.update_projection],
+                max_cached_workflows=0,
             )
-
-            async def _status() -> RunStatus:
-                return await handle.query(CodeRepairWorkflow.get_status)  # type: ignore[no-any-return]
-
-            for _ in range(50):
-                if await _status() == RunStatus.WAITING_DELIVERY_APPROVAL:
-                    break
-            else:
-                pytest.fail("Run 没有在预期时间内进入 WAITING_DELIVERY_APPROVAL")
-        # `async with first_worker` 退出 = 第一个 Worker 已经彻底停止轮询。
-
-        second_worker = Worker(
-            env.client,
-            task_queue=ORCHESTRATION_TASK_QUEUE,
-            workflows=[CodeRepairWorkflow],
-            activities=[projection_activities.update_projection],
-            max_cached_workflows=0,
-        )
-        async with second_worker:
-            await handle.execute_update(
-                CodeRepairWorkflow.submit_approval,
-                ApprovalRequest(
-                    approval_id=uuid4(),
-                    kind="delivery",
-                    decision="approve",
-                    actor_id="reviewer-1",
-                    reason="looks good",
-                ),
-            )
-            result = await handle.result()
+            async with second_worker:
+                await handle.execute_update(
+                    CodeRepairWorkflow.submit_approval,
+                    ApprovalRequest(
+                        approval_id=uuid4(),
+                        kind="delivery",
+                        decision="approve",
+                        actor_id="reviewer-1",
+                        reason="looks good",
+                    ),
+                )
+                result = await handle.result()
 
     assert result.status == RunStatus.SUCCEEDED
