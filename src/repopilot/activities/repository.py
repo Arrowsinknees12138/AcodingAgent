@@ -68,3 +68,7 @@ class RepositoryActivities:
     @activity.defn(name="export_candidate")
     async def export_candidate(self, run_id: UUID) -> CandidateSource:
         return await self._repository.export_candidate(run_id)
+
+    @activity.defn(name="build_final_diff")
+    async def build_final_diff(self, run_id: UUID) -> ArtifactRef:
+        return await self._repository.final_diff(run_id)

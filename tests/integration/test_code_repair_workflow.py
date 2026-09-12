@@ -47,6 +47,7 @@ def _fake_create_request_ref(
     *,
     missing_acceptance_criteria: bool = False,
     candidate_should_fail: bool = False,
+    reviewer_should_block: bool = False,
 ) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
@@ -56,7 +57,11 @@ def _fake_create_request_ref(
         schema_version="1",
         object_key="fake/key",
         sha256="a" * 64,
-        size_bytes=0 if missing_acceptance_criteria else (2 if candidate_should_fail else 1),
+        size_bytes=(
+            0
+            if missing_acceptance_criteria
+            else (2 if candidate_should_fail else (3 if reviewer_should_block else 1))
+        ),
         base_revision=None,
         input_artifact_ids=(),
         created_at=datetime.now(UTC),
@@ -87,7 +92,7 @@ def _make_policy_input(
 
 
 async def _wait_for_status(handle: object, expected: RunStatus) -> None:
-    for _ in range(50):
+    for _ in range(200):
         status = await handle.query(CodeRepairWorkflow.get_status)  # type: ignore[attr-defined]
         if status is expected:
             return
@@ -116,6 +121,23 @@ async def test_candidate_verification_failure_stops_before_review(
         run_id=uuid4(),
         tenant_id=uuid4(),
         create_request_ref=_fake_create_request_ref(candidate_should_fail=True),
+        auto_approve_low_risk=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+
+    assert (await handle.result()).status is RunStatus.FAILED
+
+
+async def test_reviewer_blocker_prevents_delivery(temporal_client: Client) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(reviewer_should_block=True),
         auto_approve_low_risk=True,
     )
     handle = await temporal_client.start_workflow(
@@ -262,7 +284,7 @@ async def test_run_can_be_queried_while_waiting_for_delivery_approval(
     async def _status() -> RunStatus:
         return await handle.query(CodeRepairWorkflow.get_status)  # type: ignore[no-any-return]
 
-    for _ in range(50):
+    for _ in range(200):
         if await _status() == RunStatus.WAITING_DELIVERY_APPROVAL:
             break
     else:
@@ -294,7 +316,7 @@ async def test_delivery_rejection_leads_to_rejected_status(temporal_client: Clie
     async def _status() -> RunStatus:
         return await handle.query(CodeRepairWorkflow.get_status)  # type: ignore[no-any-return]
 
-    for _ in range(50):
+    for _ in range(200):
         if await _status() == RunStatus.WAITING_DELIVERY_APPROVAL:
             break
     else:
@@ -339,7 +361,7 @@ async def test_cancellation_leads_to_cancelled_status(temporal_client: Client) -
     async def _status() -> RunStatus:
         return await handle.query(CodeRepairWorkflow.get_status)  # type: ignore[no-any-return]
 
-    for _ in range(50):
+    for _ in range(200):
         if await _status() == RunStatus.WAITING_DELIVERY_APPROVAL:
             break
     else:
@@ -387,6 +409,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                 fake_pipeline.build_developer_context,
                 fake_pipeline.integrate_patch,
                 fake_pipeline.export_candidate,
+                fake_pipeline.build_final_diff,
             ],
         )
         sandbox_worker = Worker(
@@ -405,6 +428,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                 fake_pipeline.plan_change,
                 fake_pipeline.design_sealed_tests,
                 fake_pipeline.develop_patch,
+                fake_pipeline.review_candidate,
             ],
         )
         workflow_input = _make_input(auto_approve_low_risk=False)
@@ -429,7 +453,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                         CodeRepairWorkflow.get_status
                     )
 
-                for _ in range(50):
+                for _ in range(200):
                     if await _status() == RunStatus.WAITING_DELIVERY_APPROVAL:
                         break
                 else:

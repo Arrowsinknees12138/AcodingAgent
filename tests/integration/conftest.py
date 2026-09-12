@@ -28,6 +28,7 @@ from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput
 from repopilot.activities.repository import BuildDeveloperContextInput, IntegratePatchInput
+from repopilot.activities.reviewer import ReviewCandidateInput, ReviewCandidateResult
 from repopilot.activities.verification import (
     VerifyCandidateInput,
     VerifyCandidateResult,
@@ -202,6 +203,20 @@ class FakePipelineActivities:
             passed=payload.candidate_source_ref.size_bytes != 2,
         )
 
+    @activity.defn(name="build_final_diff")
+    async def build_final_diff(self, run_id: UUID) -> ArtifactRef:
+        assert self._last_integrated_ref is not None
+        assert self._last_integrated_ref.run_id == run_id
+        return _derived_ref(self._last_integrated_ref, ArtifactKind.PATCH)
+
+    @activity.defn(name="review_candidate")
+    async def review_candidate(self, payload: ReviewCandidateInput) -> ReviewCandidateResult:
+        blocked = payload.diff_ref.size_bytes == 3
+        return ReviewCandidateResult(
+            review_ref=_derived_ref(payload.diff_ref, ArtifactKind.REVIEW_DECISION),
+            decision="request_changes" if blocked else "approve",
+        )
+
 
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
@@ -245,6 +260,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
                 fake_pipeline.build_developer_context,
                 fake_pipeline.integrate_patch,
                 fake_pipeline.export_candidate,
+                fake_pipeline.build_final_diff,
             ],
         )
         sandbox_worker = Worker(
@@ -263,6 +279,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
                 fake_pipeline.plan_change,
                 fake_pipeline.design_sealed_tests,
                 fake_pipeline.develop_patch,
+                fake_pipeline.review_candidate,
             ],
         )
         async with worker, repository_worker, sandbox_worker, model_worker:

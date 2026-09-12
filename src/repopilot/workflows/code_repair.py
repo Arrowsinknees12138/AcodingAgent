@@ -29,6 +29,7 @@ from repopilot.activities.repository import (
     IntegratePatchInput,
     RepositoryActivities,
 )
+from repopilot.activities.reviewer import ReviewCandidateInput, ReviewerActivities
 from repopilot.activities.verification import (
     VerificationActivities,
     VerifyCandidateInput,
@@ -292,6 +293,29 @@ class CodeRepairWorkflow:
             if not verification_result.passed:
                 return await self._finalize(workflow_input, RunStatus.FAILED)
             await self._transition(workflow_input, RunStatus.REVIEWING)
+            diff_ref = await workflow.execute_activity_method(
+                RepositoryActivities.build_final_diff,
+                task_spec_ref.run_id,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            review_result = await workflow.execute_activity_method(
+                ReviewerActivities.review_candidate,
+                ReviewCandidateInput(
+                    task_spec_ref=task_spec_ref,
+                    diff_ref=diff_ref,
+                    verification_ref=verification_result.report_ref,
+                ),
+                task_queue=MODEL_TASK_QUEUE,
+                schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+            )
+            if review_result.decision == "reject":
+                return await self._finalize(workflow_input, RunStatus.REJECTED)
+            if review_result.decision == "request_changes":
+                return await self._finalize(workflow_input, RunStatus.FAILED)
 
             if approval_stages.delivery is ApprovalMode.AUTOMATIC:
                 return await self._finalize(workflow_input, RunStatus.SUCCEEDED)

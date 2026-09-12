@@ -19,6 +19,7 @@ from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import QaActivities
 from repopilot.activities.repository import RepositoryActivities
+from repopilot.activities.reviewer import ReviewerActivities
 from repopilot.activities.verification import VerificationActivities
 from repopilot.config import get_settings
 from repopilot.infrastructure.artifacts.minio import MinioArtifactStore, build_minio_client
@@ -100,6 +101,7 @@ async def _run_repository_worker() -> None:
             repository_activities.build_developer_context,
             repository_activities.integrate_patch,
             repository_activities.export_candidate,
+            repository_activities.build_final_diff,
         ],
     )
     get_logger(component="worker", queue="repository").info(
@@ -176,10 +178,21 @@ async def _run_model_worker() -> None:
         model=settings.model_name,
         reservation_usd=settings.model_reservation_usd,
     )
+    reviewer = ReviewerActivities(
+        artifact_store=artifacts,
+        gateway=gateway,
+        model=settings.model_name,
+        reservation_usd=settings.model_reservation_usd,
+    )
     worker = Worker(
         client,
         task_queue=MODEL_TASK_QUEUE,
-        activities=[planning.plan_change, qa.design_sealed_tests, developer.develop_patch],
+        activities=[
+            planning.plan_change,
+            qa.design_sealed_tests,
+            developer.develop_patch,
+            reviewer.review_candidate,
+        ],
     )
     get_logger(component="worker", queue="model").info(
         "worker.starting", task_queue=MODEL_TASK_QUEUE, model=settings.model_name
