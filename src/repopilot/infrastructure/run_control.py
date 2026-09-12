@@ -15,12 +15,14 @@ from temporalio.exceptions import WorkflowAlreadyStartedError
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.tasks import CreateRunRequest
+from repopilot.infrastructure.db.model_budget import PostgresModelBudgetStore
 from repopilot.infrastructure.db.models import Artifact, AuditEvent, IdempotencyKey
 from repopilot.infrastructure.temporal.client import (
     start_code_repair_workflow,
     workflow_id_for,
 )
 from repopilot.services.artifact_store import ArtifactStore
+from repopilot.services.model_gateway import ModelBudgetInitializer
 from repopilot.services.run_control import (
     ArtifactDownload,
     ArtifactView,
@@ -45,12 +47,16 @@ class PostgresTemporalRunControl(RunControl):
         artifact_store: ArtifactStore,
         projection_store: RunProjectionStore,
         temporal_client: Client,
+        model_budget_initializer: ModelBudgetInitializer | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._session_factory = session_factory
         self._artifact_store = artifact_store
         self._projection_store = projection_store
         self._temporal = temporal_client
+        self._model_budget_initializer = model_budget_initializer or PostgresModelBudgetStore(
+            session_factory
+        )
 
     async def create(self, request: CreateRunRequest, *, idempotency_key: str) -> RunView:
         request_bytes = request.model_dump_json().encode("utf-8")
@@ -81,6 +87,16 @@ class PostgresTemporalRunControl(RunControl):
             risk_level=request.risk_level,
             approval_policy=request.approval_policy,
         )
+        try:
+            await self._model_budget_initializer.create_budget(
+                run_id=run_id,
+                tenant_id=self._tenant_id,
+                max_cost_usd=request.budget.max_cost_usd,
+                max_model_calls=request.budget.max_model_calls,
+            )
+        except Exception as exc:
+            await self._set_idempotency_status(idempotency_key, "FAILED", request_ref.artifact_id)
+            raise RunUnavailableError("模型预算暂时无法初始化") from exc
         try:
             await start_code_repair_workflow(self._temporal, workflow_input)
         except WorkflowAlreadyStartedError:

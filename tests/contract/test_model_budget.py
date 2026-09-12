@@ -33,6 +33,13 @@ async def test_reserve_settle_and_enforce_call_limit(db_engine) -> None:  # type
         max_cost_usd=Decimal("1"),
         max_model_calls=1,
     )
+    # Idempotent API retries must not reset a budget that already exists.
+    await store.create_budget(
+        run_id=run_id,
+        tenant_id=tenant_id,
+        max_cost_usd=Decimal("9"),
+        max_model_calls=9,
+    )
     context = ModelCallContext(
         model_call_id=uuid4(),
         tenant_id=tenant_id,
@@ -83,6 +90,8 @@ async def test_reserve_settle_and_enforce_call_limit(db_engine) -> None:  # type
         budget = await session.get(RunBudget, run_id)
         call = await session.get(ModelCall, context.model_call_id)
         assert budget is not None
+        assert budget.max_cost_usd == Decimal("1")
+        assert budget.max_model_calls == 1
         assert budget.reserved_calls == 0
         assert budget.settled_calls == 1
         assert budget.spent_usd == Decimal("0.01")

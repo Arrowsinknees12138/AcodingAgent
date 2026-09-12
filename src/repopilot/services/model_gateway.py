@@ -116,6 +116,17 @@ class ModelBudgetStore(Protocol):
     async def mark_unknown(self, model_call_id: UUID) -> None: ...
 
 
+class ModelBudgetInitializer(Protocol):
+    async def create_budget(
+        self,
+        *,
+        run_id: UUID,
+        tenant_id: UUID,
+        max_cost_usd: Decimal,
+        max_model_calls: int,
+    ) -> None: ...
+
+
 def build_logical_call_key(
     *,
     tenant_id: UUID,
