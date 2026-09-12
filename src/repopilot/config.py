@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     # --- Sandbox RPC（仅 model-worker / sandbox-worker 使用） ---
     sandbox_service_url: str = "http://127.0.0.1:8091"
     sandbox_service_token: SecretStr = SecretStr("local-sandbox-token")
+    pypi_proxy_url: str = "http://pypi-proxy:3128"
+    pypi_egress_network: str = "repopilot-pypi-egress"
 
     # --- 数据目录 ---
     data_dir: Path = Path("./.repopilot").resolve()
@@ -86,6 +88,22 @@ class Settings(BaseSettings):
             or value.startswith("https://localhost")
         ):
             raise ValueError("REPOPILOT_SANDBOX_SERVICE_URL 必须是 loopback 地址")
+        return value
+
+    @field_validator("pypi_proxy_url")
+    @classmethod
+    def _pypi_proxy_must_be_internal(cls, value: str) -> str:
+        if value.rstrip("/") != "http://pypi-proxy:3128":
+            raise ValueError("REPOPILOT_PYPI_PROXY_URL 必须指向隔离网络内的 http://pypi-proxy:3128")
+        return value.rstrip("/")
+
+    @field_validator("pypi_egress_network")
+    @classmethod
+    def _pypi_network_must_be_dedicated(cls, value: str) -> str:
+        if value != "repopilot-pypi-egress":
+            raise ValueError(
+                "REPOPILOT_PYPI_EGRESS_NETWORK 必须使用专用的 repopilot-pypi-egress 网络"
+            )
         return value
 
     @field_validator("data_dir")
@@ -105,6 +123,8 @@ class Settings(BaseSettings):
             "minio_bucket": self.minio_bucket,
             "model_name": self.model_name,
             "sandbox_service_url": self.sandbox_service_url,
+            "pypi_proxy_url": self.pypi_proxy_url,
+            "pypi_egress_network": self.pypi_egress_network,
             "data_dir": str(self.data_dir),
             "model_configured": self.model_base_url is not None,
         }

@@ -8,6 +8,21 @@
 name: repopilot
 
 services:
+  pypi-proxy:
+    image: ubuntu/squid:6.6-24.04_edge
+    restart: unless-stopped
+    volumes:
+      - ./infra/squid-pypi.conf:/etc/squid/squid.conf:ro
+      - pypicache:/var/spool/squid
+    networks:
+      - default
+      - pypi-egress
+    healthcheck:
+      test: ["CMD", "squid", "-k", "check"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -74,3 +89,9 @@ services:
 volumes:
   pgdata:
   miniodata:
+  pypicache:
+
+networks:
+  pypi-egress:
+    name: repopilot-pypi-egress
+    internal: true

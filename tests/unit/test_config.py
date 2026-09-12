@@ -27,3 +27,13 @@ def test_safe_summary_excludes_secrets() -> None:
     assert "repopilot-secret" not in dumped
     assert "api_token" not in summary
     assert "minio_secret_key" not in summary
+
+
+def test_pypi_proxy_must_use_the_dedicated_internal_endpoint() -> None:
+    with pytest.raises(ValueError, match="pypi-proxy"):
+        Settings(_env_file=None, pypi_proxy_url="http://example.com:3128")  # type: ignore[call-arg]
+
+
+def test_pypi_network_must_use_the_dedicated_internal_network() -> None:
+    with pytest.raises(ValueError, match="repopilot-pypi-egress"):
+        Settings(_env_file=None, pypi_egress_network="bridge")  # type: ignore[call-arg]

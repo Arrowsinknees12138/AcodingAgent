@@ -102,6 +102,8 @@ async def _run_sandbox_worker() -> None:
         data_dir=settings.data_dir,
         artifact_store=artifacts,
         tenant_id=settings.local_tenant_id,
+        pypi_proxy_url=settings.pypi_proxy_url,
+        pypi_egress_network=settings.pypi_egress_network,
     )
     verification = VerificationActivities(
         BaselineVerificationService(artifact_store=artifacts, sandbox_service=sandbox)

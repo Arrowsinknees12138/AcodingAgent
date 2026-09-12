@@ -60,12 +60,16 @@ class DockerSandboxService:
         artifact_store: ArtifactStore,
         tenant_id: UUID,
         docker_client: docker.DockerClient | None = None,
+        pypi_proxy_url: str = "http://pypi-proxy:3128",
+        pypi_egress_network: str = "repopilot-pypi-egress",
     ) -> None:
         self._sandboxes_dir = data_dir / "sandboxes"
         self._sandboxes_dir.mkdir(parents=True, exist_ok=True)
         self._artifact_store = artifact_store
         self._tenant_id = tenant_id
         self._client = docker_client or docker.from_env()
+        self._pypi_proxy_url = pypi_proxy_url
+        self._pypi_egress_network = pypi_egress_network
         self._handles: dict[UUID, _SandboxHandle] = {}
 
     def _caller(self, run_id: UUID) -> ArtifactCaller:
@@ -99,13 +103,18 @@ class DockerSandboxService:
         # 跨平台一致性。
         await asyncio.to_thread(self._chmod_recursive, workspace_dir, 0o777)
 
+        network_mode, environment = _sandbox_network_settings(
+            network_enabled=spec.network_enabled,
+            proxy_url=self._pypi_proxy_url,
+            egress_network=self._pypi_egress_network,
+        )
         container = await asyncio.to_thread(
             self._client.containers.run,
             spec.image,
             command=["sleep", "infinity"],
             detach=True,
             read_only=True,
-            network_mode="bridge" if spec.network_enabled else "none",
+            network_mode=network_mode,
             mem_limit=f"{spec.memory_mb}m",
             nano_cpus=int(spec.cpu_limit * 1_000_000_000),
             pids_limit=spec.pids_limit,
@@ -115,7 +124,7 @@ class DockerSandboxService:
             volumes={str(workspace_dir.resolve()): {"bind": "/workspace", "mode": "rw"}},
             tmpfs={"/tmp": f"size={spec.disk_mb}m"},  # noqa: S108 - 容器内路径，不是宿主临时文件
             working_dir="/workspace",
-            environment={},
+            environment=environment,
             labels={
                 "repopilot.run_id": str(spec.run_id),
                 "repopilot.sandbox_id": str(sandbox_id),
@@ -264,6 +273,29 @@ class DockerSandboxService:
         result = container.exec_run(cmd, workdir=workdir, demux=True, user="65534:65534")
         stdout, stderr = result.output
         return result.exit_code, stdout or b"", stderr or b""
+
+
+def _sandbox_network_settings(
+    *, network_enabled: bool, proxy_url: str, egress_network: str
+) -> tuple[str, dict[str, str]]:
+    """Return the only two supported sandbox network profiles.
+
+    Runtime sandboxes have no network. Build sandboxes join an internal-only
+    Docker network and receive proxy variables; the proxy is the sole container
+    on that network with a second, Internet-routed interface.
+    """
+    if not network_enabled:
+        return "none", {}
+    return egress_network, {
+        "HTTP_PROXY": proxy_url,
+        "HTTPS_PROXY": proxy_url,
+        "http_proxy": proxy_url,
+        "https_proxy": proxy_url,
+        "NO_PROXY": "",
+        "no_proxy": "",
+        "PIP_INDEX_URL": "https://pypi.org/simple",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+    }
 
 
 def _build_unified_diff(before_dir: Path, after_dir: Path, exclude: frozenset[str]) -> bytes:
