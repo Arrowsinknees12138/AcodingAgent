@@ -17,10 +17,12 @@ from repopilot.api.routes import artifacts, health, runs
 from repopilot.config import Settings, get_settings
 from repopilot.infrastructure.artifacts.minio import MinioArtifactStore, build_minio_client
 from repopilot.infrastructure.db.engine import get_session_factory
+from repopilot.infrastructure.db.readiness import DatabaseReadinessProbe
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
 from repopilot.infrastructure.run_control import PostgresTemporalRunControl
 from repopilot.infrastructure.temporal.client import connect
 from repopilot.logging import configure_logging, get_logger
+from repopilot.services.readiness import ReadinessProbe
 from repopilot.services.run_control import RunControl
 
 
@@ -28,6 +30,7 @@ def create_app(
     *,
     run_control: RunControl | None = None,
     settings: Settings | None = None,
+    readiness_probe: ReadinessProbe | None = None,
 ) -> FastAPI:
     configure_logging()
     resolved_settings = settings or get_settings()
@@ -60,6 +63,7 @@ def create_app(
 
     app = FastAPI(title="RepoPilot API", version="0.1.0", lifespan=lifespan)
     app.state.settings = resolved_settings
+    app.state.readiness_probe = readiness_probe or DatabaseReadinessProbe(get_session_factory())
     if run_control is not None:
         app.state.run_control = run_control
     app.include_router(health.router)

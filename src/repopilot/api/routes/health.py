@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response, status
+from typing import cast
+
+from fastapi import APIRouter, Request, Response, status
+
+from repopilot.services.readiness import ReadinessProbe
 
 router = APIRouter(tags=["health"])
 
@@ -18,8 +22,8 @@ async def live() -> dict[str, str]:
 
 
 @router.get("/health/ready")
-async def ready(response: Response) -> dict[str, str]:
-    # Milestone 1 阶段尚未接入数据库连接池，先返回 ok；
-    # Milestone 2 引入 SQLAlchemy engine 后在此处补充真实的连通性检查。
-    response.status_code = status.HTTP_200_OK
-    return {"status": "ok"}
+async def ready(request: Request, response: Response) -> dict[str, str]:
+    probe = cast(ReadinessProbe, request.app.state.readiness_probe)
+    is_ready = await probe.check()
+    response.status_code = status.HTTP_200_OK if is_ready else status.HTTP_503_SERVICE_UNAVAILABLE
+    return {"status": "ok" if is_ready else "unavailable"}
