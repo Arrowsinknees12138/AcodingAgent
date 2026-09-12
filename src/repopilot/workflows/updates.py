@@ -13,7 +13,7 @@ from uuid import UUID
 from repopilot.domain import StrictModel
 from repopilot.domain.enums import RunStatus
 
-ApprovalKind = Literal["requirements", "plan", "test", "delivery"]
+ApprovalKind = Literal["requirements", "plan", "execution", "test", "delivery"]
 
 
 class ApprovalRequest(StrictModel):
@@ -31,6 +31,7 @@ class ApprovalRequest(StrictModel):
 _EXPECTED_STATUS_BY_KIND: dict[ApprovalKind, RunStatus] = {
     "requirements": RunStatus.WAITING_REQUIREMENTS_APPROVAL,
     "plan": RunStatus.WAITING_PLAN_APPROVAL,
+    "execution": RunStatus.WAITING_EXECUTION_APPROVAL,
     "test": RunStatus.WAITING_TEST_APPROVAL,
     "delivery": RunStatus.WAITING_DELIVERY_APPROVAL,
 }

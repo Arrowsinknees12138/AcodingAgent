@@ -25,11 +25,16 @@ from temporalio.common import RetryPolicy
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
-from repopilot.domain.enums import RunStatus
+from repopilot.domain.enums import ApprovalMode, RiskLevel, RunStatus
 from repopilot.domain.errors import ErrorInfo
+from repopilot.domain.policies import (
+    ApprovalPolicy,
+    ApprovalStagePolicy,
+    resolve_approval_policy,
+)
 from repopilot.services.run_projection import ProjectionEvent
 from repopilot.workflows.transitions import validate_transition
-from repopilot.workflows.updates import ApprovalRequest, validate_approval
+from repopilot.workflows.updates import ApprovalKind, ApprovalRequest, validate_approval
 
 _PROJECTION_RETRY_POLICY = RetryPolicy(maximum_attempts=5)
 _PROJECTION_START_TO_CLOSE = timedelta(seconds=30)
@@ -40,7 +45,11 @@ class CodeRepairWorkflowInput(StrictModel):
     run_id: UUID
     tenant_id: UUID
     create_request_ref: ArtifactRef
-    auto_approve_low_risk: bool = True
+    risk_level: RiskLevel = RiskLevel.LOW
+    approval_policy: ApprovalPolicy = ApprovalPolicy()
+    # Temporal 输入会保存在不可变 History 中；保留旧字段兼容已经启动的 Run。
+    # 新调用方不应再传它。False 等价于额外要求 delivery 人工审批。
+    auto_approve_low_risk: bool | None = None
 
 
 class CodeRepairWorkflowOutput(StrictModel):
@@ -56,11 +65,12 @@ class CodeRepairWorkflow:
         self._status = RunStatus.QUEUED
         self._workflow_id = ""
         self._processed_approval_ids: set[UUID] = set()
-        self._delivery_decision: str | None = None
+        self._approval_decisions: dict[str, str] = {}
 
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
         self._workflow_id = workflow.info().workflow_id
+        approval_stages = self._resolve_approval_stages(workflow_input)
         await self._record_projection(workflow_input)  # 记录初始 QUEUED
 
         try:
@@ -73,17 +83,40 @@ class CodeRepairWorkflow:
             await self._transition(workflow_input, RunStatus.INGESTING)
             await self._transition(workflow_input, RunStatus.BASELINING)
             await self._transition(workflow_input, RunStatus.PLANNING)
+
+            if approval_stages.plan is ApprovalMode.MANUAL:
+                approved = await self._wait_for_approval(
+                    workflow_input,
+                    kind="plan",
+                    status=RunStatus.WAITING_PLAN_APPROVAL,
+                )
+                if not approved:
+                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+
             await self._transition(workflow_input, RunStatus.DESIGNING_TESTS)
+
+            if approval_stages.execution is ApprovalMode.MANUAL:
+                approved = await self._wait_for_approval(
+                    workflow_input,
+                    kind="execution",
+                    status=RunStatus.WAITING_EXECUTION_APPROVAL,
+                )
+                if not approved:
+                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+
             await self._transition(workflow_input, RunStatus.EXECUTING)
             await self._transition(workflow_input, RunStatus.VERIFYING)
             await self._transition(workflow_input, RunStatus.REVIEWING)
 
-            if workflow_input.auto_approve_low_risk:
+            if approval_stages.delivery is ApprovalMode.AUTOMATIC:
                 return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
 
-            await self._transition(workflow_input, RunStatus.WAITING_DELIVERY_APPROVAL)
-            await workflow.wait_condition(lambda: self._delivery_decision is not None)
-            if self._delivery_decision == "reject":
+            approved = await self._wait_for_approval(
+                workflow_input,
+                kind="delivery",
+                status=RunStatus.WAITING_DELIVERY_APPROVAL,
+            )
+            if not approved:
                 return await self._finalize(workflow_input, RunStatus.REJECTED)
             return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
         except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
@@ -104,8 +137,38 @@ class CodeRepairWorkflow:
             already_processed_ids=frozenset(self._processed_approval_ids),
         )
         self._processed_approval_ids.add(request.approval_id)
-        if request.kind == "delivery":
-            self._delivery_decision = request.decision
+        self._approval_decisions[request.kind] = request.decision
+
+    @staticmethod
+    def _resolve_approval_stages(
+        workflow_input: CodeRepairWorkflowInput,
+    ) -> ApprovalStagePolicy:
+        stages = resolve_approval_policy(
+            workflow_input.risk_level,
+            workflow_input.approval_policy,
+        ).stages
+        if workflow_input.auto_approve_low_risk is None:
+            return stages
+        return stages.model_copy(
+            update={
+                "delivery": (
+                    ApprovalMode.AUTOMATIC
+                    if workflow_input.auto_approve_low_risk
+                    else ApprovalMode.MANUAL
+                )
+            }
+        )
+
+    async def _wait_for_approval(
+        self,
+        workflow_input: CodeRepairWorkflowInput,
+        *,
+        kind: ApprovalKind,
+        status: RunStatus,
+    ) -> bool:
+        await self._transition(workflow_input, status)
+        await workflow.wait_condition(lambda: kind in self._approval_decisions)
+        return self._approval_decisions[kind] == "approve"
 
     async def _transition(
         self, workflow_input: CodeRepairWorkflowInput, new_status: RunStatus

@@ -77,3 +77,18 @@ def test_valid_delivery_approval_passes() -> None:
         current_status=RunStatus.WAITING_DELIVERY_APPROVAL,
         already_processed_ids=frozenset(),
     )
+
+
+def test_execution_approval_matches_execution_wait_state() -> None:
+    request = ApprovalRequest(
+        approval_id=uuid4(),
+        kind="execution",
+        decision="approve",
+        actor_id="u1",
+        reason="approved after reviewing the test design",
+    )
+    validate_approval(
+        request,
+        current_status=RunStatus.WAITING_EXECUTION_APPROVAL,
+        already_processed_ids=frozenset(),
+    )

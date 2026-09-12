@@ -16,7 +16,14 @@ from temporalio.worker import Worker
 
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.domain.artifacts import ArtifactRef
-from repopilot.domain.enums import ArtifactKind, RunStatus
+from repopilot.domain.enums import (
+    ApprovalMode,
+    ApprovalPolicyMode,
+    ArtifactKind,
+    RiskLevel,
+    RunStatus,
+)
+from repopilot.domain.policies import ApprovalPolicy, ApprovalStagePolicy
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
 from repopilot.infrastructure.temporal.client import (
     ORCHESTRATION_TASK_QUEUE,
@@ -55,6 +62,28 @@ def _make_input(*, auto_approve_low_risk: bool) -> CodeRepairWorkflowInput:
     )
 
 
+def _make_policy_input(
+    *,
+    risk_level: RiskLevel,
+    approval_policy: ApprovalPolicy | None = None,
+) -> CodeRepairWorkflowInput:
+    return CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(),
+        risk_level=risk_level,
+        approval_policy=approval_policy or ApprovalPolicy(),
+    )
+
+
+async def _wait_for_status(handle: object, expected: RunStatus) -> None:
+    for _ in range(50):
+        status = await handle.query(CodeRepairWorkflow.get_status)  # type: ignore[attr-defined]
+        if status is expected:
+            return
+    pytest.fail(f"Run 没有在预期时间内进入 {expected.value}")
+
+
 async def test_run_completes_when_auto_approved(temporal_client: Client) -> None:
     workflow_input = _make_input(auto_approve_low_risk=True)
     handle = await temporal_client.start_workflow(
@@ -68,6 +97,97 @@ async def test_run_completes_when_auto_approved(temporal_client: Client) -> None
 
     status = await handle.query(CodeRepairWorkflow.get_status)
     assert status == RunStatus.SUCCEEDED
+
+
+async def test_medium_risk_requires_plan_approval(temporal_client: Client) -> None:
+    workflow_input = _make_policy_input(risk_level=RiskLevel.MEDIUM)
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_PLAN_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="plan",
+            decision="approve",
+            actor_id="reviewer-1",
+            reason="plan reviewed",
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+
+
+async def test_high_risk_requires_plan_and_execution_approvals(
+    temporal_client: Client,
+) -> None:
+    workflow_input = _make_policy_input(risk_level=RiskLevel.HIGH)
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_PLAN_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="plan",
+            decision="approve",
+            actor_id="reviewer-1",
+            reason="plan reviewed",
+        ),
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_EXECUTION_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="execution",
+            decision="approve",
+            actor_id="reviewer-1",
+            reason="execution approved",
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+
+
+async def test_custom_policy_can_require_only_delivery_approval(
+    temporal_client: Client,
+) -> None:
+    workflow_input = _make_policy_input(
+        risk_level=RiskLevel.HIGH,
+        approval_policy=ApprovalPolicy(
+            mode=ApprovalPolicyMode.CUSTOM,
+            custom=ApprovalStagePolicy(
+                plan=ApprovalMode.AUTOMATIC,
+                execution=ApprovalMode.AUTOMATIC,
+                delivery=ApprovalMode.MANUAL,
+            ),
+        ),
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_DELIVERY_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="delivery",
+            decision="approve",
+            actor_id="reviewer-1",
+            reason="delivery approved",
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
 
 
 async def test_run_can_be_queried_while_waiting_for_delivery_approval(

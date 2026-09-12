@@ -53,6 +53,7 @@ class RunStatus(str, Enum):
     PLANNING = "planning"
     WAITING_PLAN_APPROVAL = "waiting_plan_approval"
     DESIGNING_TESTS = "designing_tests"
+    WAITING_EXECUTION_APPROVAL = "waiting_execution_approval"
     WAITING_TEST_APPROVAL = "waiting_test_approval"
     EXECUTING = "executing"
     VERIFYING = "verifying"

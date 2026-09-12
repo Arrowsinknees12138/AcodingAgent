@@ -30,6 +30,8 @@ _FORWARD_EDGES: frozenset[tuple[RunStatus, RunStatus]] = frozenset(
         (RunStatus.PLANNING, RunStatus.WAITING_PLAN_APPROVAL),
         (RunStatus.PLANNING, RunStatus.DESIGNING_TESTS),
         (RunStatus.WAITING_PLAN_APPROVAL, RunStatus.DESIGNING_TESTS),
+        (RunStatus.DESIGNING_TESTS, RunStatus.WAITING_EXECUTION_APPROVAL),
+        (RunStatus.WAITING_EXECUTION_APPROVAL, RunStatus.EXECUTING),
         (RunStatus.DESIGNING_TESTS, RunStatus.WAITING_TEST_APPROVAL),
         (RunStatus.DESIGNING_TESTS, RunStatus.EXECUTING),
         (RunStatus.EXECUTING, RunStatus.VERIFYING),
