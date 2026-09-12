@@ -134,10 +134,9 @@ def approve(
         typer.Option("--kind", help="requirements/plan/execution/test/delivery"),
     ],
     reason: Annotated[str, typer.Option("--reason")],
-    actor_id: Annotated[str, typer.Option("--actor-id")] = "local-user",
 ) -> None:
     """批准 Run 当前等待中的审批闸口。"""
-    body = {"kind": kind, "decision": "approve", "actor_id": actor_id, "reason": reason}
+    body = {"kind": kind, "decision": "approve", "reason": reason}
     try:
         response = httpx.post(
             f"{_base_url()}/v1/runs/{run_id}/approvals",

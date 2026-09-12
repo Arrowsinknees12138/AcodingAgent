@@ -32,7 +32,6 @@ class ApprovalBody(BaseModel):
 
     kind: ApprovalKind
     decision: Literal["approve", "reject"]
-    actor_id: str = Field(min_length=1, max_length=200)
     reason: str = Field(max_length=4_000)
     replacement_acceptance_criteria: tuple[str, ...] | None = None
 
@@ -100,7 +99,7 @@ async def submit_approval(
                 approval_id=uuid4(),
                 kind=body.kind,
                 decision=body.decision,
-                actor_id=body.actor_id,
+                actor_id="local-admin",
                 reason=body.reason,
                 replacement_acceptance_criteria=body.replacement_acceptance_criteria,
             ),

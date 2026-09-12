@@ -140,12 +140,12 @@ def test_get_approve_and_cancel_run() -> None:
         json={
             "kind": "plan",
             "decision": "approve",
-            "actor_id": "human-1",
             "reason": "reviewed",
         },
     )
     assert approval.status_code == 204
     assert control.approvals[0].kind == "plan"
+    assert control.approvals[0].actor_id == "local-admin"
 
     cancellation = client.post(f"/v1/runs/{control.run_id}:cancel", headers=headers)
     assert cancellation.status_code == 202
