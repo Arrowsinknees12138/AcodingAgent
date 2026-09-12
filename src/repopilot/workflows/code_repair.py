@@ -19,11 +19,16 @@ import temporalio.exceptions
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
 from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput, QaActivities
-from repopilot.activities.repository import RepositoryActivities
+from repopilot.activities.repository import (
+    BuildDeveloperContextInput,
+    IntegratePatchInput,
+    RepositoryActivities,
+)
 from repopilot.activities.verification import (
     VerificationActivities,
     VerifySealedTestsInput,
@@ -32,6 +37,7 @@ from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ApprovalMode, RiskLevel, RunStatus
 from repopilot.domain.errors import ErrorInfo
+from repopilot.domain.plans import PlannedFileChange
 from repopilot.domain.policies import (
     ApprovalPolicy,
     ApprovalStagePolicy,
@@ -207,6 +213,60 @@ class CodeRepairWorkflow:
                     return await self._finalize(workflow_input, RunStatus.REJECTED)
 
             await self._transition(workflow_input, RunStatus.EXECUTING)
+            work_items = {item.work_item_id: item for item in planning_result.work_items}
+            planned_files: dict[UUID, list[PlannedFileChange]] = {}
+            for planned_file in planning_result.planned_files:
+                planned_files.setdefault(planned_file.work_item_id, []).append(planned_file)
+            integrated_by_item: dict[UUID, ArtifactRef] = {}
+            for wave in planning_result.waves:
+                contexts = await asyncio.gather(
+                    *(
+                        workflow.execute_activity_method(
+                            RepositoryActivities.build_developer_context,
+                            BuildDeveloperContextInput(
+                                work_item=work_items[item_id],
+                                task_spec_ref=task_spec_ref,
+                                integrated_patch_refs=tuple(
+                                    integrated_by_item[dependency]
+                                    for dependency in work_items[item_id].dependencies
+                                ),
+                            ),
+                            task_queue=REPOSITORY_TASK_QUEUE,
+                            start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                            retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                        )
+                        for item_id in wave
+                    )
+                )
+                proposals = await asyncio.gather(
+                    *(
+                        workflow.execute_activity_method(
+                            DeveloperActivities.develop_patch,
+                            DevelopPatchInput(
+                                developer_context_ref=context_ref,
+                                task_spec_ref=task_spec_ref,
+                                planned_files=tuple(planned_files[item_id]),
+                            ),
+                            task_queue=MODEL_TASK_QUEUE,
+                            schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                            start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                            retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+                        )
+                        for item_id, context_ref in zip(wave, contexts, strict=True)
+                    )
+                )
+                for item_id, proposal_ref in zip(wave, proposals, strict=True):
+                    integrated_by_item[item_id] = await workflow.execute_activity_method(
+                        RepositoryActivities.integrate_patch,
+                        IntegratePatchInput(
+                            proposal_ref=proposal_ref,
+                            work_item=work_items[item_id],
+                            task_spec_ref=task_spec_ref,
+                        ),
+                        task_queue=REPOSITORY_TASK_QUEUE,
+                        start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                        retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                    )
             await self._transition(workflow_input, RunStatus.VERIFYING)
             await self._transition(workflow_input, RunStatus.REVIEWING)
 

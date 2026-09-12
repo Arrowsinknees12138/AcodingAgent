@@ -13,6 +13,7 @@ import sys
 
 from temporalio.worker import Worker
 
+from repopilot.activities.developer import DeveloperActivities
 from repopilot.activities.ingest import IngestActivities
 from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
@@ -95,6 +96,8 @@ async def _run_repository_worker() -> None:
             ingest.ingest_task,
             ingest.finalize_task_spec,
             repository_activities.scan_repository,
+            repository_activities.build_developer_context,
+            repository_activities.integrate_patch,
         ],
     )
     get_logger(component="worker", queue="repository").info(
@@ -160,10 +163,16 @@ async def _run_model_worker() -> None:
         model=settings.model_name,
         reservation_usd=settings.model_reservation_usd,
     )
+    developer = DeveloperActivities(
+        artifact_store=artifacts,
+        gateway=gateway,
+        model=settings.model_name,
+        reservation_usd=settings.model_reservation_usd,
+    )
     worker = Worker(
         client,
         task_queue=MODEL_TASK_QUEUE,
-        activities=[planning.plan_change, qa.design_sealed_tests],
+        activities=[planning.plan_change, qa.design_sealed_tests, developer.develop_patch],
     )
     get_logger(component="worker", queue="model").info(
         "worker.starting", task_queue=MODEL_TASK_QUEUE, model=settings.model_name

@@ -17,7 +17,7 @@ from repopilot.domain.artifacts import (
     RepositorySnapshot,
 )
 from repopilot.domain.enums import ArtifactKind, RiskLevel
-from repopilot.domain.plans import ChangePlan, WorkItem
+from repopilot.domain.plans import ChangePlan, PlannedFileChange, WorkItem
 from repopilot.domain.policies import classify_risk
 from repopilot.domain.tasks import TaskSpec
 from repopilot.services.artifact_store import ArtifactStore
@@ -50,6 +50,7 @@ class PlanChangeInput(StrictModel):
 class PlanChangeResult(StrictModel):
     plan_ref: ArtifactRef
     risk_level: RiskLevel
+    planned_files: tuple[PlannedFileChange, ...]
     work_items: tuple[WorkItem, ...]
     waves: tuple[tuple[UUID, ...], ...]
 
@@ -192,6 +193,7 @@ class PlanningActivities:
         return PlanChangeResult(
             plan_ref=plan_ref,
             risk_level=classify_risk(plan.risk_flags),
+            planned_files=plan.files,
             work_items=work_items,
             waves=schedule.waves,
         )

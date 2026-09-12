@@ -22,14 +22,16 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from testcontainers.community.postgres import PostgresContainer
 
+from repopilot.activities.developer import DevelopPatchInput
 from repopilot.activities.ingest import FinalizeTaskSpecInput
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput
+from repopilot.activities.repository import BuildDeveloperContextInput, IntegratePatchInput
 from repopilot.activities.verification import VerifySealedTestsInput, VerifySealedTestsResult
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RiskLevel
-from repopilot.domain.plans import WorkItem
+from repopilot.domain.plans import PlannedFileChange, WorkItem
 from repopilot.domain.tasks import IngestResult
 from repopilot.infrastructure.db.models import Base
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
@@ -56,6 +58,25 @@ def _derived_ref(source: ArtifactRef, kind: ArtifactKind) -> ArtifactRef:
         size_bytes=1,
         base_revision="a" * 40,
         input_artifact_ids=(source.artifact_id,),
+        created_at=datetime.now(UTC),
+    )
+
+
+def _work_item_ref(
+    work_item: WorkItem, task_spec_ref: ArtifactRef, kind: ArtifactKind
+) -> ArtifactRef:
+    digest = sha256(f"{work_item.work_item_id}:{kind.value}".encode()).hexdigest()
+    return ArtifactRef(
+        artifact_id=uuid4(),
+        run_id=work_item.run_id,
+        tenant_id=task_spec_ref.tenant_id,
+        kind=kind,
+        schema_version="1",
+        object_key=f"fake/{work_item.run_id}/{kind.value}/{digest}",
+        sha256=digest,
+        size_bytes=1,
+        base_revision="a" * 40,
+        input_artifact_ids=(),
         created_at=datetime.now(UTC),
     )
 
@@ -120,6 +141,16 @@ class FakePipelineActivities:
         return PlanChangeResult(
             plan_ref=_derived_ref(payload.task_spec_ref, ArtifactKind.CHANGE_PLAN),
             risk_level=RiskLevel.LOW,
+            planned_files=(
+                PlannedFileChange(
+                    work_item_id=work_item.work_item_id,
+                    path="src/app.py",
+                    operation="modify",
+                    owner="developer-1",
+                    responsibility="implement task",
+                    required_interfaces=(),
+                ),
+            ),
             work_items=(work_item,),
             waves=((work_item.work_item_id,),),
         )
@@ -127,6 +158,22 @@ class FakePipelineActivities:
     @activity.defn(name="design_sealed_tests")
     async def design_sealed_tests(self, payload: DesignSealedTestsInput) -> ArtifactRef:
         return _derived_ref(payload.task_spec_ref, ArtifactKind.TEST_PLAN)
+
+    @activity.defn(name="build_developer_context")
+    async def build_developer_context(self, payload: BuildDeveloperContextInput) -> ArtifactRef:
+        return _work_item_ref(
+            payload.work_item,
+            payload.task_spec_ref,
+            ArtifactKind.DEVELOPER_CONTEXT,
+        )
+
+    @activity.defn(name="develop_patch")
+    async def develop_patch(self, payload: DevelopPatchInput) -> ArtifactRef:
+        return _derived_ref(payload.developer_context_ref, ArtifactKind.PATCH)
+
+    @activity.defn(name="integrate_patch")
+    async def integrate_patch(self, payload: IntegratePatchInput) -> ArtifactRef:
+        return _derived_ref(payload.proposal_ref, ArtifactKind.INTEGRATED_PATCH)
 
 
 @pytest.fixture(scope="session")
@@ -168,6 +215,8 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
                 fake_pipeline.ingest_task,
                 fake_pipeline.finalize_task_spec,
                 fake_pipeline.scan_repository,
+                fake_pipeline.build_developer_context,
+                fake_pipeline.integrate_patch,
             ],
         )
         sandbox_worker = Worker(
@@ -181,7 +230,11 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
         model_worker = Worker(
             env.client,
             task_queue=MODEL_TASK_QUEUE,
-            activities=[fake_pipeline.plan_change, fake_pipeline.design_sealed_tests],
+            activities=[
+                fake_pipeline.plan_change,
+                fake_pipeline.design_sealed_tests,
+                fake_pipeline.develop_patch,
+            ],
         )
         async with worker, repository_worker, sandbox_worker, model_worker:
             yield env.client

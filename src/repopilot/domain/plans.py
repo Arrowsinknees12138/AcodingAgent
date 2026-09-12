@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
+from pydantic import Field, model_validator
+
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import RiskFlag
@@ -66,3 +68,22 @@ class IntegratedPatch(StrictModel):
     input_revision: str
     commit_sha: str
     exported_interface_ref: ArtifactRef
+
+
+class DeveloperFileEdit(StrictModel):
+    path: str
+    operation: Literal["create", "modify", "delete"]
+    content: str | None
+
+    @model_validator(mode="after")
+    def _content_matches_operation(self) -> DeveloperFileEdit:
+        if self.operation == "delete" and self.content is not None:
+            raise ValueError("delete edit must use null content")
+        if self.operation != "delete" and self.content is None:
+            raise ValueError("create/modify edit must include content")
+        return self
+
+
+class DeveloperPatchDesign(StrictModel):
+    edits: tuple[DeveloperFileEdit, ...] = Field(min_length=1)
+    rationale: str = Field(min_length=1, max_length=4_000)
