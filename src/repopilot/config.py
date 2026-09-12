@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -61,6 +62,9 @@ class Settings(BaseSettings):
     model_base_url: str | None = None
     model_api_key: SecretStr | None = None
     model_name: str = "fake-model"
+    model_input_usd_per_million_tokens: Decimal = Field(default=Decimal("0"), ge=0)
+    model_output_usd_per_million_tokens: Decimal = Field(default=Decimal("0"), ge=0)
+    model_reservation_usd: Decimal = Field(default=Decimal("0.10"), gt=0)
 
     # --- Sandbox RPC（仅 model-worker / sandbox-worker 使用） ---
     sandbox_service_url: str = "http://127.0.0.1:8091"
