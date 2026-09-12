@@ -12,7 +12,7 @@ from typing import Protocol
 from uuid import UUID
 
 from repopilot.domain.artifacts import ArtifactRef
-from repopilot.domain.plans import WorkItem
+from repopilot.domain.plans import CandidateSource, WorkItem
 from repopilot.domain.tasks import TaskSpec
 
 
@@ -75,5 +75,7 @@ class RepositoryService(Protocol):
     ) -> ArtifactRef: ...
 
     async def final_diff(self, run_id: UUID) -> ArtifactRef: ...
+
+    async def export_candidate(self, run_id: UUID) -> CandidateSource: ...
 
     async def cleanup(self, run_id: UUID) -> ArtifactRef: ...

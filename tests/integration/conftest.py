@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from hashlib import sha256
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -28,10 +28,15 @@ from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput
 from repopilot.activities.repository import BuildDeveloperContextInput, IntegratePatchInput
-from repopilot.activities.verification import VerifySealedTestsInput, VerifySealedTestsResult
+from repopilot.activities.verification import (
+    VerifyCandidateInput,
+    VerifyCandidateResult,
+    VerifySealedTestsInput,
+    VerifySealedTestsResult,
+)
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RiskLevel
-from repopilot.domain.plans import PlannedFileChange, WorkItem
+from repopilot.domain.plans import CandidateSource, PlannedFileChange, WorkItem
 from repopilot.domain.tasks import IngestResult
 from repopilot.infrastructure.db.models import Base
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
@@ -55,7 +60,7 @@ def _derived_ref(source: ArtifactRef, kind: ArtifactKind) -> ArtifactRef:
         schema_version="1",
         object_key=f"fake/{source.run_id}/{kind.value}/{digest}",
         sha256=digest,
-        size_bytes=1,
+        size_bytes=source.size_bytes,
         base_revision="a" * 40,
         input_artifact_ids=(source.artifact_id,),
         created_at=datetime.now(UTC),
@@ -74,7 +79,7 @@ def _work_item_ref(
         schema_version="1",
         object_key=f"fake/{work_item.run_id}/{kind.value}/{digest}",
         sha256=digest,
-        size_bytes=1,
+        size_bytes=task_spec_ref.size_bytes,
         base_revision="a" * 40,
         input_artifact_ids=(),
         created_at=datetime.now(UTC),
@@ -82,6 +87,9 @@ def _work_item_ref(
 
 
 class FakePipelineActivities:
+    def __init__(self) -> None:
+        self._last_integrated_ref: ArtifactRef | None = None
+
     @activity.defn(name="ingest_task")
     async def ingest_task(self, request_ref: ArtifactRef) -> IngestResult:
         if request_ref.size_bytes == 0:
@@ -173,7 +181,26 @@ class FakePipelineActivities:
 
     @activity.defn(name="integrate_patch")
     async def integrate_patch(self, payload: IntegratePatchInput) -> ArtifactRef:
-        return _derived_ref(payload.proposal_ref, ArtifactKind.INTEGRATED_PATCH)
+        self._last_integrated_ref = _derived_ref(
+            payload.proposal_ref, ArtifactKind.INTEGRATED_PATCH
+        )
+        return self._last_integrated_ref
+
+    @activity.defn(name="export_candidate")
+    async def export_candidate(self, run_id: UUID) -> CandidateSource:
+        assert self._last_integrated_ref is not None
+        assert self._last_integrated_ref.run_id == run_id
+        return CandidateSource(
+            source_archive_ref=_derived_ref(self._last_integrated_ref, ArtifactKind.SOURCE_ARCHIVE),
+            revision="b" * 40,
+        )
+
+    @activity.defn(name="verify_candidate")
+    async def verify_candidate(self, payload: VerifyCandidateInput) -> VerifyCandidateResult:
+        return VerifyCandidateResult(
+            report_ref=_derived_ref(payload.candidate_source_ref, ArtifactKind.VERIFICATION_REPORT),
+            passed=payload.candidate_source_ref.size_bytes != 2,
+        )
 
 
 @pytest.fixture(scope="session")
@@ -217,6 +244,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
                 fake_pipeline.scan_repository,
                 fake_pipeline.build_developer_context,
                 fake_pipeline.integrate_patch,
+                fake_pipeline.export_candidate,
             ],
         )
         sandbox_worker = Worker(
@@ -225,6 +253,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
             activities=[
                 fake_pipeline.verify_baseline,
                 fake_pipeline.verify_sealed_tests_on_base,
+                fake_pipeline.verify_candidate,
             ],
         )
         model_worker = Worker(

@@ -43,7 +43,11 @@ from tests.integration.conftest import FakePipelineActivities
 pytestmark = pytest.mark.integration
 
 
-def _fake_create_request_ref(*, missing_acceptance_criteria: bool = False) -> ArtifactRef:
+def _fake_create_request_ref(
+    *,
+    missing_acceptance_criteria: bool = False,
+    candidate_should_fail: bool = False,
+) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
         run_id=uuid4(),
@@ -52,7 +56,7 @@ def _fake_create_request_ref(*, missing_acceptance_criteria: bool = False) -> Ar
         schema_version="1",
         object_key="fake/key",
         sha256="a" * 64,
-        size_bytes=0 if missing_acceptance_criteria else 1,
+        size_bytes=0 if missing_acceptance_criteria else (2 if candidate_should_fail else 1),
         base_revision=None,
         input_artifact_ids=(),
         created_at=datetime.now(UTC),
@@ -103,6 +107,25 @@ async def test_run_completes_when_auto_approved(temporal_client: Client) -> None
 
     status = await handle.query(CodeRepairWorkflow.get_status)
     assert status == RunStatus.SUCCEEDED
+
+
+async def test_candidate_verification_failure_stops_before_review(
+    temporal_client: Client,
+) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(candidate_should_fail=True),
+        auto_approve_low_risk=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+
+    assert (await handle.result()).status is RunStatus.FAILED
 
 
 async def test_missing_acceptance_criteria_requires_requirements_approval(
@@ -363,6 +386,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                 fake_pipeline.scan_repository,
                 fake_pipeline.build_developer_context,
                 fake_pipeline.integrate_patch,
+                fake_pipeline.export_candidate,
             ],
         )
         sandbox_worker = Worker(
@@ -371,6 +395,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
             activities=[
                 fake_pipeline.verify_baseline,
                 fake_pipeline.verify_sealed_tests_on_base,
+                fake_pipeline.verify_candidate,
             ],
         )
         model_worker = Worker(

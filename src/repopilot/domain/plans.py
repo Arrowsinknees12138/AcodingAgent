@@ -54,6 +54,11 @@ class DeveloperContext(StrictModel):
     upstream_interface_refs: tuple[ArtifactRef, ...]
 
 
+class CandidateSource(StrictModel):
+    source_archive_ref: ArtifactRef
+    revision: str
+
+
 class PatchProposal(StrictModel):
     work_item_id: UUID
     attempt: int

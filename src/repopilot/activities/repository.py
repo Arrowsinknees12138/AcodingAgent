@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from temporalio import activity
 
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactRef
-from repopilot.domain.plans import WorkItem
+from repopilot.domain.plans import CandidateSource, WorkItem
 from repopilot.domain.tasks import TaskSpec
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.repository_service import RepositoryService
@@ -62,3 +64,7 @@ class RepositoryActivities:
             allowed_write_paths=payload.work_item.allowed_write_paths,
             allow_dependency_changes=task.dependency_policy.allow_new_dependencies,
         )
+
+    @activity.defn(name="export_candidate")
+    async def export_candidate(self, run_id: UUID) -> CandidateSource:
+        return await self._repository.export_candidate(run_id)

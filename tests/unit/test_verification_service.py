@@ -91,16 +91,17 @@ class FakeSandbox:
         store: MemoryArtifactStore,
         metadata: ArtifactMetadata,
         *,
-        stdout: bytes = (
+        stdout: bytes | tuple[bytes, ...] = (
             b"FAILED tests/test_app.py::test_bad - AssertionError\n"
             b"1 failed, 2 passed, 1 skipped in 0.1s"
         ),
-        exit_code: int = 1,
+        exit_code: int | tuple[int, ...] = 1,
     ) -> None:
         self._store = store
         self._metadata = metadata
-        self._stdout = stdout
-        self._exit_code = exit_code
+        self._stdout = (stdout,) if isinstance(stdout, bytes) else stdout
+        self._exit_code = (exit_code,) if isinstance(exit_code, int) else exit_code
+        self.commands: list[RunCommandRequest] = []
         self.destroyed = False
 
     async def create(self, spec: SandboxSpec) -> UUID:
@@ -110,14 +111,16 @@ class FakeSandbox:
     async def execute(self, sandbox_id: UUID, request: RunCommandRequest) -> CommandResult:
         del sandbox_id
         self.command = request
+        self.commands.append(request)
+        output_index = min(len(self.commands) - 1, len(self._stdout) - 1)
         stdout_ref = await self._store.put_bytes(
             ArtifactKind.LOG,
-            self._stdout,
+            self._stdout[output_index],
             self._metadata,
         )
         stderr_ref = await self._store.put_bytes(ArtifactKind.LOG, b"", self._metadata)
         return CommandResult(
-            exit_code=self._exit_code,
+            exit_code=self._exit_code[min(len(self.commands) - 1, len(self._exit_code) - 1)],
             timed_out=False,
             oom_killed=False,
             duration_ms=100,
@@ -221,10 +224,14 @@ async def test_candidate_verification_reports_only_new_failures_as_regressions()
         store,
         metadata,
         stdout=(
-            b"FAILED tests/test_app.py::test_known - AssertionError\n"
-            b"FAILED tests/test_new.py::test_regression - AssertionError\n"
-            b"2 failed, 2 passed in 0.1s"
+            (
+                b"FAILED tests/test_app.py::test_known - AssertionError\n"
+                b"FAILED tests/test_new.py::test_regression - AssertionError\n"
+                b"2 failed, 2 passed in 0.1s"
+            ),
+            b"1 passed in 0.1s",
         ),
+        exit_code=(1, 0),
     )
 
     report_ref = await CandidateVerificationService(
@@ -235,6 +242,7 @@ async def test_candidate_verification_reports_only_new_failures_as_regressions()
         baseline_report_ref=baseline_ref,
         candidate_source_ref=source_ref,
         candidate_revision="b" * 40,
+        test_bundle_ref=source_ref,
     )
     report = VerificationReport.model_validate_json(
         await store.get_bytes(
@@ -251,6 +259,8 @@ async def test_candidate_verification_reports_only_new_failures_as_regressions()
     assert report.regression_test_ids == ("tests/test_new.py::test_regression",)
     assert report.regression_count == 1
     assert {finding.category for finding in report.findings} == {"test", "regression"}
+    assert len(sandbox.commands) == 2
+    assert sandbox.commands[1].args == ("-m", "pytest", "-q", ".repopilot/sealed_tests")
     assert sandbox.spec.network_enabled is False
     assert sandbox.destroyed is True
 

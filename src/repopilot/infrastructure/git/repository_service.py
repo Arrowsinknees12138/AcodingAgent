@@ -40,7 +40,13 @@ from repopilot.domain.artifacts import (
     RepositorySnapshot,
 )
 from repopilot.domain.enums import ArtifactKind
-from repopilot.domain.plans import DeveloperContext, IntegratedPatch, PatchProposal, WorkItem
+from repopilot.domain.plans import (
+    CandidateSource,
+    DeveloperContext,
+    IntegratedPatch,
+    PatchProposal,
+    WorkItem,
+)
 from repopilot.domain.policies import dependency_manifest_paths
 from repopilot.domain.tasks import TaskSpec
 from repopilot.infrastructure.git.cli import GitCli, GitCommandError
@@ -498,6 +504,23 @@ class GitRepositoryService:
                 input_artifact_ids=(proposal_ref.artifact_id, exported_interface_ref.artifact_id),
             ),
         )
+
+    async def export_candidate(self, run_id: UUID) -> CandidateSource:
+        integration_path = self._integration_dir / str(run_id)
+        if not integration_path.exists():
+            raise RuntimeError(f"Run {run_id} has no integration worktree")
+        revision = (await self._git.run(["rev-parse", "HEAD"], cwd=integration_path)).strip()
+        source_ref = await self._artifact_store.put_bytes(
+            ArtifactKind.SOURCE_ARCHIVE,
+            self._archive_worktree(integration_path),
+            ArtifactMetadata(
+                tenant_id=self._tenant_id,
+                run_id=run_id,
+                base_revision=revision,
+                schema_version="1",
+            ),
+        )
+        return CandidateSource(source_archive_ref=source_ref, revision=revision)
 
     async def final_diff(self, run_id: UUID) -> ArtifactRef:
         integration_path = self._integration_dir / str(run_id)

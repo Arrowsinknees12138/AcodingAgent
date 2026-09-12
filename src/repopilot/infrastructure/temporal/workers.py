@@ -39,6 +39,7 @@ from repopilot.services.task_queues import (
 )
 from repopilot.services.verification_service import (
     BaselineVerificationService,
+    CandidateVerificationService,
     SealedTestBaselineService,
 )
 from repopilot.workflows.code_repair import CodeRepairWorkflow
@@ -98,6 +99,7 @@ async def _run_repository_worker() -> None:
             repository_activities.scan_repository,
             repository_activities.build_developer_context,
             repository_activities.integrate_patch,
+            repository_activities.export_candidate,
         ],
     )
     get_logger(component="worker", queue="repository").info(
@@ -120,12 +122,17 @@ async def _run_sandbox_worker() -> None:
     verification = VerificationActivities(
         BaselineVerificationService(artifact_store=artifacts, sandbox_service=sandbox),
         sealed=SealedTestBaselineService(artifact_store=artifacts, sandbox_service=sandbox),
+        candidate=CandidateVerificationService(artifact_store=artifacts, sandbox_service=sandbox),
         artifact_store=artifacts,
     )
     worker = Worker(
         client,
         task_queue=SANDBOX_TASK_QUEUE,
-        activities=[verification.verify_baseline, verification.verify_sealed_tests_on_base],
+        activities=[
+            verification.verify_baseline,
+            verification.verify_sealed_tests_on_base,
+            verification.verify_candidate,
+        ],
     )
     get_logger(component="worker", queue="sandbox").info(
         "worker.starting", task_queue=SANDBOX_TASK_QUEUE

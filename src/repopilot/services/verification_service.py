@@ -408,36 +408,68 @@ class CandidateVerificationService:
             )
         )
         try:
-            result = await self._sandbox.execute(sandbox_id, command)
+            results = [await self._sandbox.execute(sandbox_id, command)]
+            if test_bundle_ref is not None:
+                results.append(
+                    await self._sandbox.execute(
+                        sandbox_id,
+                        RunCommandRequest(
+                            executable="python",
+                            args=("-m", "pytest", "-q", ".repopilot/sealed_tests"),
+                            cwd="/workspace",
+                            timeout_seconds=self._timeout_seconds,
+                        ),
+                    )
+                )
         finally:
             await self._sandbox.destroy(sandbox_id)
 
-        candidate_summary = await self._summarize(result, caller)
+        summaries = [await self._summarize(result, caller) for result in results]
+        candidate_summary = TestSummary(
+            passed=sum(summary.passed for summary in summaries),
+            failed=sum(summary.failed for summary in summaries),
+            skipped=sum(summary.skipped for summary in summaries),
+            failed_test_ids=tuple(
+                dict.fromkeys(
+                    test_id for summary in summaries for test_id in summary.failed_test_ids
+                )
+            ),
+        )
         baseline_failures = frozenset(baseline.summary.failed_test_ids)
         regressions = tuple(
             test_id
             for test_id in candidate_summary.failed_test_ids
             if test_id not in baseline_failures
         )
-        findings = self._build_findings(result, candidate_summary, baseline_failures)
+        findings = tuple(
+            finding
+            for result, summary in zip(results, summaries, strict=True)
+            for finding in self._build_findings(result, summary, baseline_failures)
+        )
+        passed = all(
+            result.exit_code == 0 and not result.timed_out and not result.oom_killed
+            for result in results
+        )
+        combined_log_ref = await self._combine_logs(results, caller, candidate_source_ref)
         report = VerificationReport(
             candidate_revision=candidate_revision,
             baseline_report_ref=baseline_report_ref,
-            passed=result.exit_code == 0 and not result.timed_out and not result.oom_killed,
+            passed=passed,
             findings=findings,
             baseline_summary=baseline.summary,
             candidate_summary=candidate_summary,
             regression_test_ids=regressions,
             regression_count=len(regressions),
-            stdout_ref=result.stdout_ref,
+            stdout_ref=combined_log_ref,
         )
         input_refs = (
             snapshot_ref,
             baseline_report_ref,
             candidate_source_ref,
             test_bundle_ref,
-            result.stdout_ref,
-            result.stderr_ref,
+            *(result.stdout_ref for result in results),
+            *(result.stderr_ref for result in results),
+            combined_log_ref,
         )
         return await self._artifact_store.put_bytes(
             ArtifactKind.VERIFICATION_REPORT,
@@ -448,6 +480,41 @@ class CandidateVerificationService:
                 base_revision=candidate_revision,
                 schema_version="1",
                 input_artifact_ids=tuple(ref.artifact_id for ref in input_refs if ref is not None),
+            ),
+        )
+
+    async def _combine_logs(
+        self,
+        results: list[CommandResult],
+        caller: ArtifactCaller,
+        candidate_source_ref: ArtifactRef,
+    ) -> ArtifactRef:
+        sections: list[bytes] = []
+        for index, result in enumerate(results, start=1):
+            stdout = await self._artifact_store.get_bytes(result.stdout_ref, caller)
+            stderr = await self._artifact_store.get_bytes(result.stderr_ref, caller)
+            sections.extend(
+                (
+                    f"=== command {index} stdout ===\n".encode(),
+                    stdout,
+                    f"\n=== command {index} stderr ===\n".encode(),
+                    stderr,
+                    b"\n",
+                )
+            )
+        return await self._artifact_store.put_bytes(
+            ArtifactKind.LOG,
+            b"".join(sections),
+            ArtifactMetadata(
+                tenant_id=candidate_source_ref.tenant_id,
+                run_id=candidate_source_ref.run_id,
+                base_revision=candidate_source_ref.base_revision,
+                schema_version="1",
+                input_artifact_ids=tuple(
+                    ref.artifact_id
+                    for result in results
+                    for ref in (result.stdout_ref, result.stderr_ref)
+                ),
             ),
         )
 

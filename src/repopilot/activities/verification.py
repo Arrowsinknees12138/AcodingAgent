@@ -6,10 +6,15 @@ from temporalio import activity
 
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactRef
-from repopilot.domain.verification import SealedTestBaselineReport
+from repopilot.domain.verification import (
+    SealedTestBaselineReport,
+    TestPlan,
+    VerificationReport,
+)
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.verification_service import (
     BaselineVerificationService,
+    CandidateVerificationService,
     SealedTestBaselineService,
 )
 
@@ -24,16 +29,31 @@ class VerifySealedTestsResult(StrictModel):
     valid: bool
 
 
+class VerifyCandidateInput(StrictModel):
+    snapshot_ref: ArtifactRef
+    baseline_report_ref: ArtifactRef
+    test_plan_ref: ArtifactRef
+    candidate_source_ref: ArtifactRef
+    candidate_revision: str
+
+
+class VerifyCandidateResult(StrictModel):
+    report_ref: ArtifactRef
+    passed: bool
+
+
 class VerificationActivities:
     def __init__(
         self,
         baseline: BaselineVerificationService,
         *,
         sealed: SealedTestBaselineService | None = None,
+        candidate: CandidateVerificationService | None = None,
         artifact_store: ArtifactStore | None = None,
     ) -> None:
         self._baseline = baseline
         self._sealed = sealed
+        self._candidate = candidate
         self._artifacts = artifact_store
 
     @activity.defn(name="verify_baseline")
@@ -60,3 +80,28 @@ class VerificationActivities:
             await self._artifacts.get_bytes(report_ref, caller)
         )
         return VerifySealedTestsResult(report_ref=report_ref, valid=report.valid)
+
+    @activity.defn(name="verify_candidate")
+    async def verify_candidate(self, payload: VerifyCandidateInput) -> VerifyCandidateResult:
+        if self._candidate is None or self._artifacts is None:
+            raise RuntimeError("candidate verifier is not configured")
+        caller = ArtifactCaller(
+            tenant_id=payload.test_plan_ref.tenant_id,
+            run_id=payload.test_plan_ref.run_id,
+            role=None,
+            service="verification",
+        )
+        plan = TestPlan.model_validate_json(
+            await self._artifacts.get_bytes(payload.test_plan_ref, caller)
+        )
+        report_ref = await self._candidate.verify(
+            snapshot_ref=payload.snapshot_ref,
+            baseline_report_ref=payload.baseline_report_ref,
+            candidate_source_ref=payload.candidate_source_ref,
+            candidate_revision=payload.candidate_revision,
+            test_bundle_ref=plan.test_bundle_ref,
+        )
+        report = VerificationReport.model_validate_json(
+            await self._artifacts.get_bytes(report_ref, caller)
+        )
+        return VerifyCandidateResult(report_ref=report_ref, passed=report.passed)

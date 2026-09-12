@@ -31,6 +31,7 @@ from repopilot.activities.repository import (
 )
 from repopilot.activities.verification import (
     VerificationActivities,
+    VerifyCandidateInput,
     VerifySealedTestsInput,
 )
 from repopilot.domain import StrictModel
@@ -139,7 +140,7 @@ class CodeRepairWorkflow:
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
             await self._transition(workflow_input, RunStatus.BASELINING)
-            await workflow.execute_activity_method(
+            baseline_report_ref = await workflow.execute_activity_method(
                 VerificationActivities.verify_baseline,
                 snapshot_ref,
                 task_queue=SANDBOX_TASK_QUEUE,
@@ -268,6 +269,28 @@ class CodeRepairWorkflow:
                         retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
                     )
             await self._transition(workflow_input, RunStatus.VERIFYING)
+            candidate = await workflow.execute_activity_method(
+                RepositoryActivities.export_candidate,
+                task_spec_ref.run_id,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            verification_result = await workflow.execute_activity_method(
+                VerificationActivities.verify_candidate,
+                VerifyCandidateInput(
+                    snapshot_ref=snapshot_ref,
+                    baseline_report_ref=baseline_report_ref,
+                    test_plan_ref=test_plan_ref,
+                    candidate_source_ref=candidate.source_archive_ref,
+                    candidate_revision=candidate.revision,
+                ),
+                task_queue=SANDBOX_TASK_QUEUE,
+                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            if not verification_result.passed:
+                return await self._finalize(workflow_input, RunStatus.FAILED)
             await self._transition(workflow_input, RunStatus.REVIEWING)
 
             if approval_stages.delivery is ApprovalMode.AUTOMATIC:
