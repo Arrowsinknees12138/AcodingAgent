@@ -98,7 +98,8 @@ class VerificationReport(StrictModel):
     candidate_summary: TestSummary
     regression_test_ids: tuple[str, ...]
     regression_count: int
-    report_ref: ArtifactRef
+    # 承载本模型的外层 ArtifactRef 就是 report ref；序列化内容不能自引用。
+    report_ref: ArtifactRef | None = None
     stdout_ref: ArtifactRef | None
 
 

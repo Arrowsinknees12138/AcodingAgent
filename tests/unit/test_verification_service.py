@@ -17,7 +17,7 @@ from repopilot.domain.artifacts import (
     RepositorySnapshot,
 )
 from repopilot.domain.enums import ArtifactKind
-from repopilot.domain.verification import BaselineReport
+from repopilot.domain.verification import BaselineReport, TestSummary, VerificationReport
 from repopilot.services.sandbox_service import (
     CommandResult,
     RunCommandRequest,
@@ -25,6 +25,7 @@ from repopilot.services.sandbox_service import (
 )
 from repopilot.services.verification_service import (
     BaselineVerificationService,
+    CandidateVerificationService,
     InvalidTestConfigurationError,
     SourceInventory,
     discover_test_command,
@@ -76,9 +77,21 @@ def test_explicit_command_rejects_shell_string() -> None:
 
 
 class FakeSandbox:
-    def __init__(self, store: MemoryArtifactStore, metadata: ArtifactMetadata) -> None:
+    def __init__(
+        self,
+        store: MemoryArtifactStore,
+        metadata: ArtifactMetadata,
+        *,
+        stdout: bytes = (
+            b"FAILED tests/test_app.py::test_bad - AssertionError\n"
+            b"1 failed, 2 passed, 1 skipped in 0.1s"
+        ),
+        exit_code: int = 1,
+    ) -> None:
         self._store = store
         self._metadata = metadata
+        self._stdout = stdout
+        self._exit_code = exit_code
         self.destroyed = False
 
     async def create(self, spec: SandboxSpec) -> UUID:
@@ -90,15 +103,12 @@ class FakeSandbox:
         self.command = request
         stdout_ref = await self._store.put_bytes(
             ArtifactKind.LOG,
-            (
-                b"FAILED tests/test_app.py::test_bad - AssertionError\n"
-                b"1 failed, 2 passed, 1 skipped in 0.1s"
-            ),
+            self._stdout,
             self._metadata,
         )
         stderr_ref = await self._store.put_bytes(ArtifactKind.LOG, b"", self._metadata)
         return CommandResult(
-            exit_code=1,
+            exit_code=self._exit_code,
             timed_out=False,
             oom_killed=False,
             duration_ms=100,
@@ -156,6 +166,81 @@ async def test_baseline_verification_writes_report_and_always_destroys_sandbox()
     assert report.summary.failed == 1
     assert report.summary.skipped == 1
     assert report.summary.failed_test_ids == ("tests/test_app.py::test_bad",)
+    assert sandbox.destroyed is True
+
+
+async def test_candidate_verification_reports_only_new_failures_as_regressions() -> None:
+    store = MemoryArtifactStore()
+    tenant_id, run_id = uuid4(), uuid4()
+    metadata = ArtifactMetadata(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        base_revision="a" * 40,
+        schema_version="1",
+    )
+    source_ref = await store.put_bytes(
+        ArtifactKind.SOURCE_ARCHIVE,
+        _archive({"tests/test_app.py": b"def test_bad(): assert False"}),
+        metadata,
+    )
+    symbol_ref = await store.put_bytes(ArtifactKind.SYMBOL_INDEX, b"[]", metadata)
+    snapshot_ref = await store.put_bytes(
+        ArtifactKind.REPOSITORY_SNAPSHOT,
+        _snapshot(source_ref, symbol_ref).model_dump_json().encode(),
+        metadata,
+    )
+    details_ref = await store.put_bytes(ArtifactKind.LOG, b"baseline", metadata)
+    baseline_ref = await store.put_bytes(
+        ArtifactKind.BASELINE_REPORT,
+        BaselineReport(
+            base_revision="a" * 40,
+            runnable=True,
+            command=("python", "-m", "pytest", "-q"),
+            summary=TestSummary(
+                passed=2,
+                failed=1,
+                skipped=0,
+                failed_test_ids=("tests/test_app.py::test_known",),
+            ),
+            details_ref=details_ref,
+        ).model_dump_json().encode(),
+        metadata,
+    )
+    sandbox = FakeSandbox(
+        store,
+        metadata,
+        stdout=(
+            b"FAILED tests/test_app.py::test_known - AssertionError\n"
+            b"FAILED tests/test_new.py::test_regression - AssertionError\n"
+            b"2 failed, 2 passed in 0.1s"
+        ),
+    )
+
+    report_ref = await CandidateVerificationService(
+        artifact_store=store,
+        sandbox_service=sandbox,
+    ).verify(
+        snapshot_ref=snapshot_ref,
+        baseline_report_ref=baseline_ref,
+        candidate_source_ref=source_ref,
+        candidate_revision="b" * 40,
+    )
+    report = VerificationReport.model_validate_json(
+        await store.get_bytes(
+            report_ref,
+            ArtifactCaller(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                role=None,
+                service="test",
+            ),
+        )
+    )
+    assert report.passed is False
+    assert report.regression_test_ids == ("tests/test_new.py::test_regression",)
+    assert report.regression_count == 1
+    assert {finding.category for finding in report.findings} == {"test", "regression"}
+    assert sandbox.spec.network_enabled is False
     assert sandbox.destroyed is True
 
 

@@ -7,6 +7,7 @@ import re
 import tarfile
 import tomllib
 from dataclasses import dataclass
+from uuid import uuid4
 
 from repopilot.domain.artifacts import (
     ArtifactCaller,
@@ -15,7 +16,12 @@ from repopilot.domain.artifacts import (
     RepositorySnapshot,
 )
 from repopilot.domain.enums import ArtifactKind
-from repopilot.domain.verification import BaselineReport, TestSummary
+from repopilot.domain.verification import (
+    BaselineReport,
+    TestSummary,
+    VerificationFinding,
+    VerificationReport,
+)
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.sandbox_service import (
     CommandResult,
@@ -210,3 +216,176 @@ def _parse_explicit_command(value: object, timeout_seconds: int) -> RunCommandRe
         cwd="/workspace",
         timeout_seconds=timeout_seconds,
     )
+
+
+class CandidateVerificationService:
+    """在全新断网沙箱中验证候选源码，并与基线失败集合比较。"""
+
+    def __init__(
+        self,
+        *,
+        artifact_store: ArtifactStore,
+        sandbox_service: SandboxService,
+        image: str = "python:3.12-slim",
+        timeout_seconds: int = 600,
+    ) -> None:
+        self._artifact_store = artifact_store
+        self._sandbox = sandbox_service
+        self._image = image
+        self._timeout_seconds = timeout_seconds
+
+    async def verify(
+        self,
+        *,
+        snapshot_ref: ArtifactRef,
+        baseline_report_ref: ArtifactRef,
+        candidate_source_ref: ArtifactRef,
+        candidate_revision: str,
+        test_bundle_ref: ArtifactRef | None = None,
+    ) -> ArtifactRef:
+        caller = ArtifactCaller(
+            tenant_id=snapshot_ref.tenant_id,
+            run_id=snapshot_ref.run_id,
+            role=None,
+            service="verification",
+        )
+        snapshot = RepositorySnapshot.model_validate_json(
+            await self._artifact_store.get_bytes(snapshot_ref, caller)
+        )
+        baseline = BaselineReport.model_validate_json(
+            await self._artifact_store.get_bytes(baseline_report_ref, caller)
+        )
+        source = await self._artifact_store.get_bytes(candidate_source_ref, caller)
+        command = discover_test_command(
+            snapshot,
+            inspect_source_archive(source),
+            timeout_seconds=self._timeout_seconds,
+        )
+        sandbox_id = await self._sandbox.create(
+            SandboxSpec(
+                run_id=snapshot_ref.run_id,
+                work_item_id=None,
+                image=self._image,
+                source_archive_ref=candidate_source_ref,
+                test_bundle_ref=test_bundle_ref,
+                network_enabled=False,
+                wall_time_seconds=self._timeout_seconds,
+            )
+        )
+        try:
+            result = await self._sandbox.execute(sandbox_id, command)
+        finally:
+            await self._sandbox.destroy(sandbox_id)
+
+        candidate_summary = await self._summarize(result, caller)
+        baseline_failures = frozenset(baseline.summary.failed_test_ids)
+        regressions = tuple(
+            test_id
+            for test_id in candidate_summary.failed_test_ids
+            if test_id not in baseline_failures
+        )
+        findings = self._build_findings(result, candidate_summary, baseline_failures)
+        report = VerificationReport(
+            candidate_revision=candidate_revision,
+            baseline_report_ref=baseline_report_ref,
+            passed=result.exit_code == 0 and not result.timed_out and not result.oom_killed,
+            findings=findings,
+            baseline_summary=baseline.summary,
+            candidate_summary=candidate_summary,
+            regression_test_ids=regressions,
+            regression_count=len(regressions),
+            stdout_ref=result.stdout_ref,
+        )
+        input_refs = (
+            snapshot_ref,
+            baseline_report_ref,
+            candidate_source_ref,
+            test_bundle_ref,
+            result.stdout_ref,
+            result.stderr_ref,
+        )
+        return await self._artifact_store.put_bytes(
+            ArtifactKind.VERIFICATION_REPORT,
+            report.model_dump_json().encode(),
+            ArtifactMetadata(
+                tenant_id=snapshot_ref.tenant_id,
+                run_id=snapshot_ref.run_id,
+                base_revision=candidate_revision,
+                schema_version="1",
+                input_artifact_ids=tuple(
+                    ref.artifact_id for ref in input_refs if ref is not None
+                ),
+            ),
+        )
+
+    async def _summarize(self, result: CommandResult, caller: ArtifactCaller) -> TestSummary:
+        stdout = (await self._artifact_store.get_bytes(result.stdout_ref, caller)).decode(
+            "utf-8", errors="replace"
+        )
+        stderr = (await self._artifact_store.get_bytes(result.stderr_ref, caller)).decode(
+            "utf-8", errors="replace"
+        )
+        combined = f"{stdout}\n{stderr}"
+        counts = {"passed": 0, "failed": 0, "skipped": 0}
+        for count, kind in _PYTEST_COUNT_RE.findall(combined):
+            counts[kind] = max(counts[kind], int(count))
+        return TestSummary(
+            passed=counts["passed"],
+            failed=counts["failed"],
+            skipped=counts["skipped"],
+            failed_test_ids=tuple(dict.fromkeys(_PYTEST_FAILED_ID_RE.findall(combined))),
+        )
+
+    @staticmethod
+    def _build_findings(
+        result: CommandResult,
+        summary: TestSummary,
+        baseline_failures: frozenset[str],
+    ) -> tuple[VerificationFinding, ...]:
+        findings: list[VerificationFinding] = []
+        if result.timed_out:
+            findings.append(
+                VerificationFinding(
+                    finding_id=uuid4(),
+                    file_path=None,
+                    severity="blocker",
+                    category="test",
+                    message="候选验证超时",
+                )
+            )
+        if result.oom_killed:
+            findings.append(
+                VerificationFinding(
+                    finding_id=uuid4(),
+                    file_path=None,
+                    severity="blocker",
+                    category="test",
+                    message="候选验证超过内存限制",
+                )
+            )
+        for test_id in summary.failed_test_ids:
+            is_regression = test_id not in baseline_failures
+            findings.append(
+                VerificationFinding(
+                    finding_id=uuid4(),
+                    file_path=test_id.split("::", 1)[0],
+                    severity="blocker",
+                    category="regression" if is_regression else "test",
+                    message=(
+                        f"候选新增失败测试: {test_id}"
+                        if is_regression
+                        else f"候选仍未修复基线失败测试: {test_id}"
+                    ),
+                )
+            )
+        if result.exit_code not in {0, None} and not findings:
+            findings.append(
+                VerificationFinding(
+                    finding_id=uuid4(),
+                    file_path=None,
+                    severity="blocker",
+                    category="test",
+                    message=f"候选验证命令退出码为 {result.exit_code}，但未解析到测试 ID",
+                )
+            )
+        return tuple(findings)
