@@ -7,22 +7,63 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 
-from repopilot.api.routes import health
-from repopilot.config import get_settings
+from repopilot.api.routes import health, runs
+from repopilot.config import Settings, get_settings
+from repopilot.infrastructure.artifacts.minio import MinioArtifactStore, build_minio_client
+from repopilot.infrastructure.db.engine import get_session_factory
+from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
+from repopilot.infrastructure.run_control import PostgresTemporalRunControl
+from repopilot.infrastructure.temporal.client import connect
 from repopilot.logging import configure_logging, get_logger
+from repopilot.services.run_control import RunControl
 
 
-def create_app() -> FastAPI:
+def create_app(
+    *,
+    run_control: RunControl | None = None,
+    settings: Settings | None = None,
+) -> FastAPI:
     configure_logging()
-    settings = get_settings()
+    resolved_settings = settings or get_settings()
     logger = get_logger(component="api")
-    logger.info("api.starting", **settings.safe_summary())
+    logger.info("api.starting", **resolved_settings.safe_summary())
 
-    app = FastAPI(title="RepoPilot API", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        if run_control is None:
+            session_factory = get_session_factory()
+            artifact_store = MinioArtifactStore(
+                client=build_minio_client(
+                    resolved_settings.minio_endpoint,
+                    resolved_settings.minio_access_key,
+                    resolved_settings.minio_secret_key.get_secret_value(),
+                ),
+                bucket=resolved_settings.minio_bucket,
+                session_factory=session_factory,
+            )
+            await artifact_store.ensure_bucket()
+            projection_store = PostgresRunProjectionStore(session_factory)
+            application.state.run_control = PostgresTemporalRunControl(
+                tenant_id=resolved_settings.local_tenant_id,
+                session_factory=session_factory,
+                artifact_store=artifact_store,
+                projection_store=projection_store,
+                temporal_client=await connect(resolved_settings),
+            )
+        yield
+
+    app = FastAPI(title="RepoPilot API", version="0.1.0", lifespan=lifespan)
+    app.state.settings = resolved_settings
+    if run_control is not None:
+        app.state.run_control = run_control
     app.include_router(health.router)
+    app.include_router(runs.router)
     return app
 
 

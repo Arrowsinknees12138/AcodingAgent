@@ -16,7 +16,7 @@ from pydantic import Field, field_validator
 
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
-from repopilot.domain.enums import RunStatus
+from repopilot.domain.enums import RiskLevel, RunStatus
 from repopilot.domain.errors import ErrorInfo
 from repopilot.domain.policies import ApprovalPolicy, DependencyPolicy, QaPolicy
 
@@ -57,6 +57,8 @@ class CreateRunRequest(StrictModel):
     approval_policy: ApprovalPolicy = ApprovalPolicy()
     dependency_policy: DependencyPolicy = DependencyPolicy()
     qa: QaPolicy = QaPolicy()
+    # 在 Planner Activity 接入前由调用方提供；接入后将由 ChangePlan.risk_flags 推导。
+    risk_level: RiskLevel = RiskLevel.LOW
 
     @field_validator("acceptance_criteria")
     @classmethod
@@ -85,6 +87,7 @@ class TaskSpec(StrictModel):
     approval_policy: ApprovalPolicy = ApprovalPolicy()
     dependency_policy: DependencyPolicy = DependencyPolicy()
     qa: QaPolicy = QaPolicy()
+    risk_level: RiskLevel = RiskLevel.LOW
 
     @field_validator("base_revision")
     @classmethod

@@ -15,6 +15,7 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     api_token: SecretStr = Field(default=SecretStr("local-dev-token"))
     api_host: str = "127.0.0.1"
     api_port: int = 8080
+    local_tenant_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
 
     # --- PostgreSQL ---
     # 本地 docker-compose 把容器内 5432 映射到宿主机 5433，避免与本机
