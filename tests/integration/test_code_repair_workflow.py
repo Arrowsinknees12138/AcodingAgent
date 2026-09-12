@@ -368,7 +368,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
         model_worker = Worker(
             env.client,
             task_queue=MODEL_TASK_QUEUE,
-            activities=[fake_pipeline.plan_change],
+            activities=[fake_pipeline.plan_change, fake_pipeline.design_sealed_tests],
         )
         workflow_input = _make_input(auto_approve_low_risk=False)
         first_worker = Worker(

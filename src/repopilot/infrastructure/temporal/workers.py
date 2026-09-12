@@ -16,6 +16,7 @@ from temporalio.worker import Worker
 from repopilot.activities.ingest import IngestActivities
 from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
+from repopilot.activities.qa import QaActivities
 from repopilot.activities.repository import RepositoryActivities
 from repopilot.activities.verification import VerificationActivities
 from repopilot.config import get_settings
@@ -148,10 +149,16 @@ async def _run_model_worker() -> None:
         model=settings.model_name,
         reservation_usd=settings.model_reservation_usd,
     )
+    qa = QaActivities(
+        artifact_store=artifacts,
+        gateway=gateway,
+        model=settings.model_name,
+        reservation_usd=settings.model_reservation_usd,
+    )
     worker = Worker(
         client,
         task_queue=MODEL_TASK_QUEUE,
-        activities=[planning.plan_change],
+        activities=[planning.plan_change, qa.design_sealed_tests],
     )
     get_logger(component="worker", queue="model").info(
         "worker.starting", task_queue=MODEL_TASK_QUEUE, model=settings.model_name

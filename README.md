@@ -44,12 +44,13 @@
       Loop、角色 Tool ACL、文件/命令参数安全校验、trajectory/model response
       Artifact 和四个 Role Prompt v1。已提供 `json_schema` / `json_object`
       兼容模式及真实端点 smoke test；model worker 已接入 Planner Activity，
-      会执行预算预留、严格结构化输出、计划校验与 ChangePlan Artifact 持久化。
-      待完成：sandbox RPC backend 与 QA/Developer/Reviewer Activity。
+      会执行预算预留、严格结构化输出、计划校验与 ChangePlan Artifact 持久化；
+      QA Activity 也已能生成受限路径下的 sealed test bundle 和 TestPlan。
+      待完成：sandbox RPC backend 与 Developer/Reviewer Activity。
 - [ ] Milestone 7（进行中）：已实现 ChangePlan/WorkItem 跨对象校验、环检测、
       路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner/QA/
-      Developer/Reviewer 中 Planner 已接入主 Workflow；其余角色、Repair loop
-      与完整 E2E 尚未接入。
+      Developer/Reviewer 中 Planner 与 QA 已接入主 Workflow；其余角色、
+      Repair loop 与完整 E2E 尚未接入。
 - [ ] Milestone 8：评测与交付
 
 控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载

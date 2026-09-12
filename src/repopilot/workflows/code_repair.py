@@ -22,6 +22,7 @@ from temporalio.common import RetryPolicy
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
 from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
+from repopilot.activities.qa import DesignSealedTestsInput, QaActivities
 from repopilot.activities.repository import RepositoryActivities
 from repopilot.activities.verification import VerificationActivities
 from repopilot.domain import StrictModel
@@ -163,6 +164,17 @@ class CodeRepairWorkflow:
                     return await self._finalize(workflow_input, RunStatus.REJECTED)
 
             await self._transition(workflow_input, RunStatus.DESIGNING_TESTS)
+            await workflow.execute_activity_method(
+                QaActivities.design_sealed_tests,
+                DesignSealedTestsInput(
+                    task_spec_ref=task_spec_ref,
+                    repository_snapshot_ref=snapshot_ref,
+                ),
+                task_queue=MODEL_TASK_QUEUE,
+                schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+            )
 
             if approval_stages.execution is ApprovalMode.MANUAL:
                 approval = await self._wait_for_approval(

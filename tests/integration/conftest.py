@@ -25,6 +25,7 @@ from testcontainers.community.postgres import PostgresContainer
 from repopilot.activities.ingest import FinalizeTaskSpecInput
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
+from repopilot.activities.qa import DesignSealedTestsInput
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RiskLevel
 from repopilot.domain.tasks import IngestResult
@@ -97,6 +98,10 @@ class FakePipelineActivities:
             risk_level=RiskLevel.LOW,
         )
 
+    @activity.defn(name="design_sealed_tests")
+    async def design_sealed_tests(self, payload: DesignSealedTestsInput) -> ArtifactRef:
+        return _derived_ref(payload.task_spec_ref, ArtifactKind.TEST_PLAN)
+
 
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
@@ -147,7 +152,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
         model_worker = Worker(
             env.client,
             task_queue=MODEL_TASK_QUEUE,
-            activities=[fake_pipeline.plan_change],
+            activities=[fake_pipeline.plan_change, fake_pipeline.design_sealed_tests],
         )
         async with worker, repository_worker, sandbox_worker, model_worker:
             yield env.client

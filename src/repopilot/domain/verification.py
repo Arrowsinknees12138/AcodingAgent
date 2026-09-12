@@ -24,6 +24,17 @@ class AcceptanceTestMapping(StrictModel):
     test_names: tuple[str, ...]
 
 
+class SealedTestFile(StrictModel):
+    path: str
+    content: str
+
+
+class SealedTestDesign(StrictModel):
+    files: tuple[SealedTestFile, ...]
+    cases: tuple[TestCaseSpec, ...]
+    acceptance_mapping: tuple[AcceptanceTestMapping, ...]
+
+
 class TestPlan(StrictModel):
     test_plan_id: UUID
     origin: Literal["sealed", "post_patch"]
