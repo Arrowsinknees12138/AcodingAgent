@@ -20,7 +20,9 @@
       读取 ACL）
 - [x] Milestone 3：Temporal 最小闭环（`CodeRepairWorkflow` 状态机、
       `update_projection` Activity、Approval Update、取消、Worker 崩溃恢复、
-      Query，均以真实 Temporal 测试 Server + 真实 PostgreSQL 验证）
+      Query，均以真实 Temporal 测试 Server + 真实 PostgreSQL 验证）。现已把
+      ingest、repository scan、baseline verification 接入独立 Task Queue，
+      并支持 Low 自动、Medium 计划审批、High 计划+执行审批及逐阶段自定义策略。
 - [x] Milestone 4：Repository Service（真实 git mirror clone/worktree/
       cherry-pick 集成、`git apply --check` 校验、AST 符号索引与接口 Diff、
       越权路径拒绝、patch 冲突检测；均以真实本地 git 仓库 + MinIO/
@@ -34,15 +36,35 @@
       `git apply` 的 diff；sealed test bundle 按需注入且不进最终 diff。
       均以真实 Docker 容器验证：网络隔离、Fork Bomb 遏制、超时、恶意
       cwd 拒绝、隐藏测试 ACL）。已补齐安全的测试命令发现、基线执行与
-      BaselineReport；候选验证、依赖安装和 Temporal Activity 尚未实现，
+      BaselineReport；候选验证已支持基线差分与新增 regression 识别。
+      依赖策略已固定为官方 PyPI、读取 lockfile、允许缓存、默认禁止新增依赖，
+      并拒绝额外 index/Git/URL source；依赖层的实际构建与断网复用尚未实现，
       因此本里程碑不能标记为完成。
 - [ ] Milestone 6（进行中）：已实现 Fake/OpenAI-compatible Provider、稳定
       逻辑调用键、PostgreSQL 预算预留/结算/释放/UNKNOWN 状态、统一 Agent
       Loop、角色 Tool ACL、文件/命令参数安全校验、trajectory/model response
       Artifact 和四个 Role Prompt v1。待完成：sandbox RPC backend、角色输出
       Artifact 持久化、model Activity/Worker，以及真实模型单文件 smoke test。
-- [ ] Milestone 7：DAG、Repair 与完整 E2E
+- [ ] Milestone 7（进行中）：已实现 ChangePlan/WorkItem 跨对象校验、环检测、
+      路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner/QA/
+      Developer/Reviewer Activity、Repair loop 与完整 E2E 尚未接入。
 - [ ] Milestone 8：评测与交付
+
+控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载
+REST API；CLI 已提供 `run`、`status`、`approve`、`cancel`、`events`、
+`artifacts`。创建 Run 使用 PostgreSQL 幂等键、内容寻址请求 Artifact 和固定
+Temporal Workflow ID。
+
+## 当前策略基线
+
+- Low：自动执行。
+- Medium：需要 Plan approval。
+- High：需要 Plan approval 与 Execution approval。
+- 自定义模式：可分别把 plan、execution、delivery 配置为 automatic/manual。
+- QA `standard`：强制 `acceptance_tests`、`targeted_tests`、`scope_check`。
+- Reviewer 仅对验收失败、越界、明显回归、安全、明显错误处理、API contract、
+  不必要依赖、绕过测试、改测试掩盖 bug 做 BLOCK；命名、可选重构、docstring、
+  轻微风格仅 COMMENT。
 
 ## 环境要求
 
