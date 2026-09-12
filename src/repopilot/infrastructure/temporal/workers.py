@@ -125,12 +125,14 @@ async def _run_sandbox_worker() -> None:
         BaselineVerificationService(artifact_store=artifacts, sandbox_service=sandbox),
         sealed=SealedTestBaselineService(artifact_store=artifacts, sandbox_service=sandbox),
         candidate=CandidateVerificationService(artifact_store=artifacts, sandbox_service=sandbox),
+        sandbox_service=sandbox,
         artifact_store=artifacts,
     )
     worker = Worker(
         client,
         task_queue=SANDBOX_TASK_QUEUE,
         activities=[
+            verification.prepare_dependencies,
             verification.verify_baseline,
             verification.verify_sealed_tests_on_base,
             verification.verify_candidate,

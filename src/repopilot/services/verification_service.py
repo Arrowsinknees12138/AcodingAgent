@@ -122,7 +122,9 @@ class BaselineVerificationService:
         self._image = image
         self._timeout_seconds = timeout_seconds
 
-    async def verify(self, snapshot_ref: ArtifactRef) -> ArtifactRef:
+    async def verify(
+        self, snapshot_ref: ArtifactRef, *, dependency_layer_key: str | None = None
+    ) -> ArtifactRef:
         caller = ArtifactCaller(
             tenant_id=snapshot_ref.tenant_id,
             run_id=snapshot_ref.run_id,
@@ -145,6 +147,7 @@ class BaselineVerificationService:
                 image=self._image,
                 source_archive_ref=snapshot.source_archive_ref,
                 test_bundle_ref=None,
+                dependency_layer_key=dependency_layer_key,
                 wall_time_seconds=self._timeout_seconds,
             )
         )
@@ -213,7 +216,13 @@ class SealedTestBaselineService:
         self._image = image
         self._timeout_seconds = timeout_seconds
 
-    async def verify(self, *, snapshot_ref: ArtifactRef, test_plan_ref: ArtifactRef) -> ArtifactRef:
+    async def verify(
+        self,
+        *,
+        snapshot_ref: ArtifactRef,
+        test_plan_ref: ArtifactRef,
+        dependency_layer_key: str | None = None,
+    ) -> ArtifactRef:
         if (
             snapshot_ref.run_id != test_plan_ref.run_id
             or snapshot_ref.tenant_id != test_plan_ref.tenant_id
@@ -244,6 +253,7 @@ class SealedTestBaselineService:
                 image=self._image,
                 source_archive_ref=snapshot.source_archive_ref,
                 test_bundle_ref=plan.test_bundle_ref,
+                dependency_layer_key=dependency_layer_key,
                 network_enabled=False,
                 wall_time_seconds=self._timeout_seconds,
             )
@@ -377,6 +387,7 @@ class CandidateVerificationService:
         candidate_source_ref: ArtifactRef,
         candidate_revision: str,
         test_bundle_ref: ArtifactRef | None = None,
+        dependency_layer_key: str | None = None,
     ) -> ArtifactRef:
         caller = ArtifactCaller(
             tenant_id=snapshot_ref.tenant_id,
@@ -403,6 +414,7 @@ class CandidateVerificationService:
                 image=self._image,
                 source_archive_ref=candidate_source_ref,
                 test_bundle_ref=test_bundle_ref,
+                dependency_layer_key=dependency_layer_key,
                 network_enabled=False,
                 wall_time_seconds=self._timeout_seconds,
             )

@@ -416,6 +416,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
             env.client,
             task_queue=SANDBOX_TASK_QUEUE,
             activities=[
+                fake_pipeline.prepare_dependencies,
                 fake_pipeline.verify_baseline,
                 fake_pipeline.verify_sealed_tests_on_base,
                 fake_pipeline.verify_candidate,

@@ -5,21 +5,23 @@
 `--cap-drop ALL`、`no-new-privileges`、CPU/内存/PID/磁盘限制、不挂载
 Docker Socket、不挂载宿主 Git/HOME/SSH/云凭证。
 
-Phase 0 简化点（明确写出来）：
+当前简化点（明确写出来）：
 - 基础镜像用固定 tag（`python:3.12-slim`）而不是文档建议的 digest 锁定；
   锁一个具体 digest 又不做镜像更新流程，只会在镜像下线时变成"完全跑不
   起来"，比浮动 tag 更脆。真正的 digest 锁定和镜像更新策略留给有镜像
   管理流程的阶段再做。
-- 依赖安装（第 14.3 节，Build Sandbox 联网装包）不在 Milestone 5 范围，
-  等 Milestone 6 Developer/Verification 真正需要跑仓库自身依赖时再实现；
-  当前只跑不需要额外安装第三方包的验证命令（compileall/ast 校验等）。
+- Build Sandbox 仅通过受控 PyPI 网络创建内容寻址的依赖层；运行沙箱只读
+  挂载该层并保持断网。当前固定安装平台 pytest/uv 版本，基础镜像 digest
+  与依赖层生命周期治理留给后续镜像管理流程。
 """
 
 from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import io
+import json
 import shutil
 import tarfile
 from dataclasses import dataclass
@@ -33,14 +35,18 @@ from docker.models.containers import Container
 
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, ArtifactRef
 from repopilot.domain.enums import ArtifactKind
+from repopilot.domain.policies import DependencyPolicy
 from repopilot.logging import get_logger
 from repopilot.services.artifact_store import ArtifactStore
+from repopilot.services.dependency_service import DependencyInstallPlan, plan_dependency_install
 from repopilot.services.sandbox_service import CommandResult, RunCommandRequest, SandboxSpec
 
 logger = get_logger(component="sandbox_service")
 
 _TIMEOUT_EXIT_CODE = 124  # GNU coreutils `timeout` 在它自己触发超时时的固定退出码
 _SIGKILL_EXIT_CODE = 137  # 128 + SIGKILL；超时之外收到这个退出码，最可能是 OOM
+_SANDBOX_PYTEST_REQUIREMENT = "pytest==8.4.2"
+_SANDBOX_UV_REQUIREMENT = "uv==0.8.15"
 
 
 @dataclass
@@ -64,18 +70,172 @@ class DockerSandboxService:
         pypi_egress_network: str = "repopilot-pypi-egress",
     ) -> None:
         self._sandboxes_dir = data_dir / "sandboxes"
+        self._dependency_layers_dir = data_dir / "dependency-layers"
+        self._package_cache_dir = data_dir / "package-cache"
         self._sandboxes_dir.mkdir(parents=True, exist_ok=True)
+        self._dependency_layers_dir.mkdir(parents=True, exist_ok=True)
+        self._package_cache_dir.mkdir(parents=True, exist_ok=True)
         self._artifact_store = artifact_store
         self._tenant_id = tenant_id
         self._client = docker_client or docker.from_env()
         self._pypi_proxy_url = pypi_proxy_url
         self._pypi_egress_network = pypi_egress_network
         self._handles: dict[UUID, _SandboxHandle] = {}
+        self._dependency_locks: dict[str, asyncio.Lock] = {}
 
     def _caller(self, run_id: UUID) -> ArtifactCaller:
         return ArtifactCaller(
             tenant_id=self._tenant_id, run_id=run_id, role=None, service="sandbox"
         )
+
+    async def prepare_dependencies(
+        self, source_archive_ref: ArtifactRef, policy: DependencyPolicy
+    ) -> str:
+        caller = self._caller(source_archive_ref.run_id)
+        source = await self._artifact_store.get_bytes(source_archive_ref, caller)
+        plan = plan_dependency_install(source, policy)
+        key = hashlib.sha256(
+            json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()
+            + source_archive_ref.sha256.encode()
+            + _SANDBOX_PYTEST_REQUIREMENT.encode()
+        ).hexdigest()
+        layer_dir = self._dependency_layers_dir / key
+        complete_marker = layer_dir / ".complete"
+        if complete_marker.exists():
+            return key
+        lock = self._dependency_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if complete_marker.exists():
+                return key
+            await asyncio.to_thread(self._build_dependency_layer, key, source, plan)
+        return key
+
+    def _build_dependency_layer(
+        self,
+        key: str,
+        source: bytes,
+        plan: DependencyInstallPlan,
+    ) -> None:
+        build_root = self._dependency_layers_dir / f".build-{key}-{uuid4().hex[:8]}"
+        workspace_dir = build_root / "workspace"
+        deps_dir = build_root / "deps"
+        workspace_dir.mkdir(parents=True)
+        deps_dir.mkdir()
+        self._extract_tar_gz(source, workspace_dir)
+        self._chmod_recursive(deps_dir, 0o777)
+        self._chmod_recursive(self._package_cache_dir, 0o777)
+        network_mode, environment = _sandbox_network_settings(
+            network_enabled=True,
+            proxy_url=self._pypi_proxy_url,
+            egress_network=self._pypi_egress_network,
+        )
+        environment.update(
+            {
+                "PIP_CACHE_DIR": "/package-cache/pip",
+                "UV_CACHE_DIR": "/package-cache/uv",
+                "UV_PROJECT_ENVIRONMENT": "/deps",
+            }
+        )
+        container = self._client.containers.run(
+            "python:3.12-slim",
+            command=["sleep", "infinity"],
+            detach=True,
+            read_only=True,
+            network_mode=network_mode,
+            mem_limit="1024m",
+            nano_cpus=1_000_000_000,
+            pids_limit=128,
+            cap_drop=["ALL"],
+            security_opt=["no-new-privileges"],
+            user="65534:65534",
+            volumes={
+                str(workspace_dir.resolve()): {"bind": "/workspace", "mode": "ro"},
+                str(deps_dir.resolve()): {"bind": "/deps", "mode": "rw"},
+                str(self._package_cache_dir.resolve()): {
+                    "bind": "/package-cache",
+                    "mode": "rw",
+                },
+            },
+            tmpfs={"/tmp": "size=2048m"},  # noqa: S108 - container-only tmpfs
+            working_dir="/workspace",
+            environment=environment,
+            labels={"repopilot.dependency_layer": key},
+            auto_remove=False,
+        )
+        build_error: Exception | None = None
+        try:
+            self._run_build_command(container, ["python", "-m", "venv", "/deps"])
+            self._run_build_command(
+                container,
+                [
+                    "/deps/bin/python",
+                    "-m",
+                    "pip",
+                    "install",
+                    "--only-binary=:all:",
+                    "--index-url",
+                    plan.index_url,
+                    _SANDBOX_PYTEST_REQUIREMENT,
+                ],
+            )
+            if plan.manager == "uv":
+                self._run_build_command(
+                    container,
+                    [
+                        "/deps/bin/python",
+                        "-m",
+                        "pip",
+                        "install",
+                        "--only-binary=:all:",
+                        "--index-url",
+                        plan.index_url,
+                        _SANDBOX_UV_REQUIREMENT,
+                    ],
+                )
+                assert plan.command is not None
+                self._run_build_command(container, ["/deps/bin/uv", *plan.command.args])
+            elif plan.command is not None:
+                self._run_build_command(
+                    container,
+                    ["/deps/bin/python", *plan.command.args],
+                )
+            self._run_build_command(container, ["rm", "-f", "/deps/lib64"])
+        except Exception as exc:  # cleanup must happen after the container releases bind mounts
+            build_error = exc
+        finally:
+            try:
+                container.stop(timeout=3)
+            except NotFound:
+                pass
+            try:
+                container.remove(force=True)
+            except NotFound:
+                pass
+
+        if build_error is not None:
+            shutil.rmtree(build_root, ignore_errors=True)
+            raise build_error
+
+        final_dir = self._dependency_layers_dir / key
+        if final_dir.exists():
+            shutil.rmtree(build_root, ignore_errors=True)
+            return
+        deps_dir.replace(final_dir)
+        (final_dir / ".complete").write_text("ready\n", encoding="utf-8")
+        shutil.rmtree(build_root, ignore_errors=True)
+
+    @staticmethod
+    def _run_build_command(container: Container, command: list[str]) -> None:
+        result = container.exec_run(
+            ["timeout", "--kill-after=5s", "900s", *command],
+            workdir="/workspace",
+            demux=True,
+            user="65534:65534",
+        )
+        if result.exit_code != 0:
+            stdout, stderr = result.output
+            details = ((stderr or stdout) or b"").decode("utf-8", errors="replace")[-4000:]
+            raise RuntimeError(f"dependency build failed ({result.exit_code}): {details}")
 
     async def create(self, spec: SandboxSpec) -> UUID:
         sandbox_id = uuid4()
@@ -108,6 +268,21 @@ class DockerSandboxService:
             proxy_url=self._pypi_proxy_url,
             egress_network=self._pypi_egress_network,
         )
+        volumes = {str(workspace_dir.resolve()): {"bind": "/workspace", "mode": "rw"}}
+        if spec.dependency_layer_key is not None:
+            key = spec.dependency_layer_key
+            if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
+                raise ValueError("invalid dependency layer key")
+            dependency_dir = self._dependency_layers_dir / key
+            if not (dependency_dir / ".complete").exists():
+                raise ValueError(f"dependency layer is not ready: {key}")
+            volumes[str(dependency_dir.resolve())] = {"bind": "/deps", "mode": "ro"}
+            environment.update(
+                {
+                    "VIRTUAL_ENV": "/deps",
+                    "PATH": "/deps/bin:/usr/local/bin:/usr/bin:/bin",
+                }
+            )
         container = await asyncio.to_thread(
             self._client.containers.run,
             spec.image,
@@ -121,7 +296,7 @@ class DockerSandboxService:
             cap_drop=["ALL"],
             security_opt=["no-new-privileges"],
             user="65534:65534",
-            volumes={str(workspace_dir.resolve()): {"bind": "/workspace", "mode": "rw"}},
+            volumes=volumes,
             tmpfs={"/tmp": f"size={spec.disk_mb}m"},  # noqa: S108 - 容器内路径，不是宿主临时文件
             working_dir="/workspace",
             environment=environment,

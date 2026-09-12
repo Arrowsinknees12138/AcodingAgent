@@ -15,6 +15,7 @@ from pydantic import Field
 
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
+from repopilot.domain.policies import DependencyPolicy
 
 
 class RunCommandRequest(StrictModel):
@@ -30,6 +31,7 @@ class SandboxSpec(StrictModel):
     image: str
     source_archive_ref: ArtifactRef
     test_bundle_ref: ArtifactRef | None
+    dependency_layer_key: str | None = None
     network_enabled: bool = False
     cpu_limit: float = 1.0
     memory_mb: int = 1024
@@ -48,6 +50,10 @@ class CommandResult(StrictModel):
 
 
 class SandboxService(Protocol):
+    async def prepare_dependencies(
+        self, source_archive_ref: ArtifactRef, policy: DependencyPolicy
+    ) -> str: ...
+
     async def create(self, spec: SandboxSpec) -> UUID: ...
 
     async def execute(self, sandbox_id: UUID, request: RunCommandRequest) -> CommandResult: ...

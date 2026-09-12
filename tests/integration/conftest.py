@@ -30,6 +30,9 @@ from repopilot.activities.qa import DesignSealedTestsInput
 from repopilot.activities.repository import BuildDeveloperContextInput, IntegratePatchInput
 from repopilot.activities.reviewer import ReviewCandidateInput, ReviewCandidateResult
 from repopilot.activities.verification import (
+    PrepareDependenciesInput,
+    PrepareDependenciesResult,
+    VerifyBaselineInput,
     VerifyCandidateInput,
     VerifyCandidateResult,
     VerifySealedTestsInput,
@@ -119,9 +122,16 @@ class FakePipelineActivities:
     async def scan_repository(self, task_ref: ArtifactRef) -> ArtifactRef:
         return _derived_ref(task_ref, ArtifactKind.REPOSITORY_SNAPSHOT)
 
+    @activity.defn(name="prepare_dependencies")
+    async def prepare_dependencies(
+        self, payload: PrepareDependenciesInput
+    ) -> PrepareDependenciesResult:
+        del payload
+        return PrepareDependenciesResult(dependency_layer_key="a" * 64)
+
     @activity.defn(name="verify_baseline")
-    async def verify_baseline(self, snapshot_ref: ArtifactRef) -> ArtifactRef:
-        return _derived_ref(snapshot_ref, ArtifactKind.BASELINE_REPORT)
+    async def verify_baseline(self, payload: VerifyBaselineInput) -> ArtifactRef:
+        return _derived_ref(payload.snapshot_ref, ArtifactKind.BASELINE_REPORT)
 
     @activity.defn(name="verify_sealed_tests_on_base")
     async def verify_sealed_tests_on_base(
@@ -267,6 +277,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
             env.client,
             task_queue=SANDBOX_TASK_QUEUE,
             activities=[
+                fake_pipeline.prepare_dependencies,
                 fake_pipeline.verify_baseline,
                 fake_pipeline.verify_sealed_tests_on_base,
                 fake_pipeline.verify_candidate,

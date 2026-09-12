@@ -38,19 +38,20 @@
       依赖策略已固定为官方 PyPI、读取 lockfile、允许缓存、默认禁止新增依赖，
       并拒绝额外 index/Git/URL source；Build Sandbox 已通过内部 Docker 网络
       和带磁盘缓存的 Squid 白名单代理限制到 `pypi.org` 与
-      `files.pythonhosted.org`。依赖层的实际构建与断网复用尚未实现。
+      `files.pythonhosted.org`。依赖层现已按 Source Archive 与安装计划内容寻址缓存，首次构建受控联网，
+      后续 Developer/Verification 沙箱通过只读挂载在 `--network none` 下复用；真实 Docker 测试已验证。
 - [ ] Milestone 6（进行中）：已实现 Fake/OpenAI-compatible Provider、稳定
       逻辑调用键、PostgreSQL 预算预留/结算/释放/UNKNOWN 状态、统一 Agent
       Loop、角色 Tool ACL、文件/命令参数安全校验、trajectory/model response
       Artifact 和四个 Role Prompt v1。已提供 `json_schema` / `json_object`
       兼容模式及真实端点 smoke test；model worker 已接入 Planner Activity，
       会执行预算预留、严格结构化输出、计划校验与 ChangePlan Artifact 持久化；
-      QA Activity 也已能生成受限路径下的 sealed test bundle 和 TestPlan。
-      待完成：sandbox RPC backend 与 Developer/Reviewer Activity。
+      QA Activity 也已能生成受限路径下的 sealed test bundle 和 TestPlan；Developer 会按 WorkItem
+      精确读写范围生成补丁，Reviewer 严格执行 BLOCK/COMMENT 分类。待完成：交互式 sandbox RPC tool backend。
 - [ ] Milestone 7（进行中）：已实现 ChangePlan/WorkItem 跨对象校验、环检测、
       路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner/QA/
-      Developer/Reviewer 中 Planner 与 QA 已接入主 Workflow；其余角色、
-      Repair loop 与完整 E2E 尚未接入。
+      Planner、QA、Developer、候选 Verification、Reviewer 均已接入主 Workflow，并按 DAG wave 最多
+      并发 4 个 Developer。待完成：Repair loop、最终清理/报告和真实仓库完整 E2E。
 - [ ] Milestone 8：评测与交付
 
 控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载

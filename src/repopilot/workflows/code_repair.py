@@ -31,7 +31,9 @@ from repopilot.activities.repository import (
 )
 from repopilot.activities.reviewer import ReviewCandidateInput, ReviewerActivities
 from repopilot.activities.verification import (
+    PrepareDependenciesInput,
     VerificationActivities,
+    VerifyBaselineInput,
     VerifyCandidateInput,
     VerifySealedTestsInput,
 )
@@ -140,10 +142,23 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
+            dependency_result = await workflow.execute_activity_method(
+                VerificationActivities.prepare_dependencies,
+                PrepareDependenciesInput(
+                    snapshot_ref=snapshot_ref,
+                    task_spec_ref=task_spec_ref,
+                ),
+                task_queue=SANDBOX_TASK_QUEUE,
+                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
             await self._transition(workflow_input, RunStatus.BASELINING)
             baseline_report_ref = await workflow.execute_activity_method(
                 VerificationActivities.verify_baseline,
-                snapshot_ref,
+                VerifyBaselineInput(
+                    snapshot_ref=snapshot_ref,
+                    dependency_layer_key=dependency_result.dependency_layer_key,
+                ),
                 task_queue=SANDBOX_TASK_QUEUE,
                 start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
@@ -191,6 +206,7 @@ class CodeRepairWorkflow:
                 VerifySealedTestsInput(
                     snapshot_ref=snapshot_ref,
                     test_plan_ref=test_plan_ref,
+                    dependency_layer_key=dependency_result.dependency_layer_key,
                 ),
                 task_queue=SANDBOX_TASK_QUEUE,
                 start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
@@ -285,6 +301,7 @@ class CodeRepairWorkflow:
                     test_plan_ref=test_plan_ref,
                     candidate_source_ref=candidate.source_archive_ref,
                     candidate_revision=candidate.revision,
+                    dependency_layer_key=dependency_result.dependency_layer_key,
                 ),
                 task_queue=SANDBOX_TASK_QUEUE,
                 start_to_close_timeout=_SANDBOX_START_TO_CLOSE,

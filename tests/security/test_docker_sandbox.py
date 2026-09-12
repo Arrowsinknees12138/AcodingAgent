@@ -17,11 +17,48 @@ from tests.security.conftest import SANDBOX_IMAGE, TENANT_ID, make_tar_gz
 
 from repopilot.domain.artifacts import ArtifactMetadata
 from repopilot.domain.enums import ArtifactKind
+from repopilot.domain.policies import DependencyPolicy
 from repopilot.infrastructure.artifacts.minio import MinioArtifactStore
 from repopilot.infrastructure.sandbox.docker import DockerSandboxService
 from repopilot.services.sandbox_service import RunCommandRequest, SandboxSpec
 
 pytestmark = pytest.mark.security
+
+
+async def test_cached_dependency_layer_is_available_in_offline_runtime(
+    sandbox_service: DockerSandboxService,
+    source_archive_ref: tuple,
+) -> None:
+    run_id, ref = source_archive_ref
+    layer_key = await sandbox_service.prepare_dependencies(ref, DependencyPolicy())
+    assert await sandbox_service.prepare_dependencies(ref, DependencyPolicy()) == layer_key
+
+    sandbox_id = await sandbox_service.create(
+        SandboxSpec(
+            run_id=run_id,
+            work_item_id=None,
+            image=SANDBOX_IMAGE,
+            source_archive_ref=ref,
+            test_bundle_ref=None,
+            dependency_layer_key=layer_key,
+            network_enabled=False,
+            wall_time_seconds=30,
+        )
+    )
+    try:
+        result = await sandbox_service.execute(
+            sandbox_id,
+            RunCommandRequest(
+                executable="python",
+                args=("-m", "pytest", "--version"),
+                cwd="/workspace",
+                timeout_seconds=10,
+            ),
+        )
+    finally:
+        await sandbox_service.destroy(sandbox_id)
+
+    assert result.exit_code == 0
 
 
 async def test_network_access_is_blocked(
