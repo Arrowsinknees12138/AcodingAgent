@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from decimal import Decimal
+from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -36,6 +37,7 @@ class OpenAICompatibleProvider:
         output_usd_per_million_tokens: Decimal = Decimal("0"),
         client: httpx.AsyncClient | None = None,
         retry_base_seconds: float = 1.0,
+        structured_output_mode: Literal["json_schema", "json_object"] = "json_schema",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -44,25 +46,25 @@ class OpenAICompatibleProvider:
         self._output_rate = output_usd_per_million_tokens
         self._client = client
         self._retry_base_seconds = retry_base_seconds
+        self._structured_output_mode = structured_output_mode
 
     async def generate[T: BaseModel](
         self, request: ModelRequest, output_type: type[T]
     ) -> ModelResponse[T]:
         messages = await self._load_messages(request)
+        system_prompt = request.system_prompt
+        if self._structured_output_mode == "json_object":
+            system_prompt = (
+                f"{system_prompt}\nReturn only valid JSON matching this JSON Schema: "
+                f"{json.dumps(output_type.model_json_schema(), ensure_ascii=False)}"
+            )
         payload = {
             "model": request.model,
-            "messages": [{"role": "system", "content": request.system_prompt}, *messages],
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
             "temperature": request.temperature,
             "top_p": request.top_p,
             "max_tokens": request.max_output_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": output_type.__name__,
-                    "strict": True,
-                    "schema": output_type.model_json_schema(),
-                },
-            },
+            "response_format": self._response_format(output_type),
         }
         raw = await self._post_with_retry(payload)
         usage = self._parse_usage(raw)
@@ -86,6 +88,18 @@ class OpenAICompatibleProvider:
             provider_request_id=_optional_string(raw.get("id")),
             raw_response_ref=raw_ref,
         )
+
+    def _response_format(self, output_type: type[BaseModel]) -> dict[str, object]:
+        if self._structured_output_mode == "json_object":
+            return {"type": "json_object"}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": output_type.__name__,
+                "strict": True,
+                "schema": output_type.model_json_schema(),
+            },
+        }
 
     def _parse_usage(self, raw: dict[str, object]) -> ModelUsage:
         usage_data = raw.get("usage", {})

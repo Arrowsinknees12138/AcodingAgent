@@ -37,6 +37,7 @@ dev = [
 repopilot = "repopilot.cli:main"
 repopilot-api = "repopilot.api.app:run"
 repopilot-worker = "repopilot.infrastructure.temporal.workers:main"
+repopilot-model-smoke = "repopilot.infrastructure.model.smoke:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     model_input_usd_per_million_tokens: Decimal = Field(default=Decimal("0"), ge=0)
     model_output_usd_per_million_tokens: Decimal = Field(default=Decimal("0"), ge=0)
     model_reservation_usd: Decimal = Field(default=Decimal("0.10"), gt=0)
+    model_structured_output_mode: Literal["json_schema", "json_object"] = "json_schema"
 
     # --- Sandbox RPC（仅 model-worker / sandbox-worker 使用） ---
     sandbox_service_url: str = "http://127.0.0.1:8091"
@@ -122,6 +123,7 @@ class Settings(BaseSettings):
             "minio_endpoint": self.minio_endpoint,
             "minio_bucket": self.minio_bucket,
             "model_name": self.model_name,
+            "model_structured_output_mode": self.model_structured_output_mode,
             "sandbox_service_url": self.sandbox_service_url,
             "pypi_proxy_url": self.pypi_proxy_url,
             "pypi_egress_network": self.pypi_egress_network,

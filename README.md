@@ -26,10 +26,8 @@
 - [x] Milestone 4：Repository Service（真实 git mirror clone/worktree/
       cherry-pick 集成、`git apply --check` 校验、AST 符号索引与接口 Diff、
       越权路径拒绝、patch 冲突检测；均以真实本地 git 仓库 + MinIO/
-      PostgreSQL 验证）。**尚未接入 Temporal Activity**——`activities/
-      repository.py`、`ingest_task`/`scan_repository` 的仓库体积/文件数
-      限制校验，留到 Milestone 7 真正替换掉 Workflow 里的占位状态跳转时
-      再做，避免在还没有调用方的情况下先搭一层 Activity 包装。
+      PostgreSQL 验证）。`ingest_task` 与 `scan_repository` 已接入独立的
+      repository Task Queue，并执行仓库体积/文件数限制校验。
 - [ ] Milestone 5（进行中）：Sandbox 核心已完成（Docker Sandbox：非 root、
       `--network none`、只读根文件系统、`--cap-drop ALL`、CPU/内存/PID
       限制；`timeout --kill-after` 强制超时；`export_changes` 产出兼容
@@ -38,13 +36,15 @@
       cwd 拒绝、隐藏测试 ACL）。已补齐安全的测试命令发现、基线执行与
       BaselineReport；候选验证已支持基线差分与新增 regression 识别。
       依赖策略已固定为官方 PyPI、读取 lockfile、允许缓存、默认禁止新增依赖，
-      并拒绝额外 index/Git/URL source；依赖层的实际构建与断网复用尚未实现，
-      因此本里程碑不能标记为完成。
+      并拒绝额外 index/Git/URL source；Build Sandbox 已通过内部 Docker 网络
+      和带磁盘缓存的 Squid 白名单代理限制到 `pypi.org` 与
+      `files.pythonhosted.org`。依赖层的实际构建与断网复用尚未实现。
 - [ ] Milestone 6（进行中）：已实现 Fake/OpenAI-compatible Provider、稳定
       逻辑调用键、PostgreSQL 预算预留/结算/释放/UNKNOWN 状态、统一 Agent
       Loop、角色 Tool ACL、文件/命令参数安全校验、trajectory/model response
-      Artifact 和四个 Role Prompt v1。待完成：sandbox RPC backend、角色输出
-      Artifact 持久化、model Activity/Worker，以及真实模型单文件 smoke test。
+      Artifact 和四个 Role Prompt v1。已提供 `json_schema` / `json_object`
+      兼容模式及真实端点 smoke test。待完成：sandbox RPC backend、角色输出
+      Artifact 持久化、model Activity/Worker。
 - [ ] Milestone 7（进行中）：已实现 ChangePlan/WorkItem 跨对象校验、环检测、
       路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner/QA/
       Developer/Reviewer Activity、Repair loop 与完整 E2E 尚未接入。
@@ -83,6 +83,14 @@ docker compose up -d postgres minio temporal temporal-ui
 
 uv run repopilot-api          # 启动 API（另开一个终端）
 uv run repopilot health       # CLI 调用 /health/live 验证连通性
+uv run repopilot-model-smoke  # 产生一次很小的真实模型调用，验证结构化输出
+```
+
+Build Sandbox 需要 PyPI 出口时，另启动 `pypi-proxy`。沙箱所在网络是
+`internal`，不能绕过代理直连公网；代理仅允许官方 PyPI 两个域名。
+
+```bash
+docker compose up -d pypi-proxy
 ```
 
 或使用封装脚本：

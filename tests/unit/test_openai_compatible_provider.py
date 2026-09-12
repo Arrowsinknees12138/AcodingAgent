@@ -130,3 +130,56 @@ async def test_provider_retries_rate_limit_then_succeeds() -> None:
         _StructuredOutput,
     )
     assert attempts == 2
+
+
+async def test_provider_supports_json_object_compatibility_mode() -> None:
+    store = MemoryArtifactStore()
+    messages_ref = await store.put_bytes(
+        ArtifactKind.TRAJECTORY,
+        b'[{"role":"user","content":"return JSON"}]',
+        ArtifactMetadata(
+            tenant_id=uuid4(),
+            run_id=uuid4(),
+            base_revision="a" * 40,
+            schema_version="1",
+        ),
+    )
+    seen_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"names":[]}'}}],
+                "usage": {},
+            },
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example/v1",
+        api_key="secret",
+        artifact_store=store,
+        structured_output_mode="json_object",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    await provider.generate(
+        ModelRequest(
+            logical_call_key="b" * 64,
+            model="test-model",
+            system_prompt="system",
+            messages_ref=messages_ref,
+            tool_schema_ref=None,
+            temperature=0,
+            top_p=1,
+            max_output_tokens=100,
+        ),
+        _StructuredOutput,
+    )
+
+    assert seen_payload["response_format"] == {"type": "json_object"}
+    messages = seen_payload["messages"]
+    assert isinstance(messages, list)
+    first_message = messages[0]
+    assert isinstance(first_message, dict)
+    assert "JSON Schema" in str(first_message["content"])
