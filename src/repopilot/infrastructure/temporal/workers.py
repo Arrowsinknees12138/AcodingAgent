@@ -14,18 +14,23 @@ import sys
 from temporalio.worker import Worker
 
 from repopilot.activities.ingest import IngestActivities
+from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.repository import RepositoryActivities
 from repopilot.activities.verification import VerificationActivities
 from repopilot.config import get_settings
 from repopilot.infrastructure.artifacts.minio import MinioArtifactStore, build_minio_client
 from repopilot.infrastructure.db.engine import get_session_factory
+from repopilot.infrastructure.db.model_budget import PostgresModelBudgetStore
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
 from repopilot.infrastructure.git.repository_service import GitRepositoryService
+from repopilot.infrastructure.model.openai_compatible import OpenAICompatibleProvider
 from repopilot.infrastructure.sandbox.docker import DockerSandboxService
 from repopilot.infrastructure.temporal.client import connect
 from repopilot.logging import configure_logging, get_logger
+from repopilot.services.model_gateway import BudgetedModelGateway
 from repopilot.services.task_queues import (
+    MODEL_TASK_QUEUE,
     ORCHESTRATION_TASK_QUEUE,
     REPOSITORY_TASK_QUEUE,
     SANDBOX_TASK_QUEUE,
@@ -119,6 +124,41 @@ async def _run_sandbox_worker() -> None:
     await worker.run()
 
 
+async def _run_model_worker() -> None:
+    settings = get_settings()
+    if not settings.model_base_url:
+        raise RuntimeError("REPOPILOT_MODEL_BASE_URL 未配置，model worker 无法启动")
+    if settings.model_api_key is None or not settings.model_api_key.get_secret_value():
+        raise RuntimeError("REPOPILOT_MODEL_API_KEY 未配置，model worker 无法启动")
+
+    client = await connect(settings)
+    artifacts = await _artifact_store()
+    provider = OpenAICompatibleProvider(
+        base_url=settings.model_base_url,
+        api_key=settings.model_api_key.get_secret_value(),
+        artifact_store=artifacts,
+        input_usd_per_million_tokens=settings.model_input_usd_per_million_tokens,
+        output_usd_per_million_tokens=settings.model_output_usd_per_million_tokens,
+        structured_output_mode=settings.model_structured_output_mode,
+    )
+    gateway = BudgetedModelGateway(provider, PostgresModelBudgetStore(get_session_factory()))
+    planning = PlanningActivities(
+        artifact_store=artifacts,
+        gateway=gateway,
+        model=settings.model_name,
+        reservation_usd=settings.model_reservation_usd,
+    )
+    worker = Worker(
+        client,
+        task_queue=MODEL_TASK_QUEUE,
+        activities=[planning.plan_change],
+    )
+    get_logger(component="worker", queue="model").info(
+        "worker.starting", task_queue=MODEL_TASK_QUEUE, model=settings.model_name
+    )
+    await worker.run()
+
+
 async def _run(queue: str) -> None:
     if queue == "orchestration":
         await _run_orchestration_worker()
@@ -129,11 +169,10 @@ async def _run(queue: str) -> None:
     if queue == "sandbox":
         await _run_sandbox_worker()
         return
-    # model worker 要在角色输出 Artifact 落地后注册；提前起一个空 Worker
-    # 只会制造“看起来在运行但什么都不做”的假象。
-    raise NotImplementedError(
-        f"'{queue}' worker 还未实现，会在对应 Milestone 落地 Activity 之后接入"
-    )
+    if queue == "model":
+        await _run_model_worker()
+        return
+    raise ValueError(f"未知 worker queue: {queue}")
 
 
 def main() -> None:

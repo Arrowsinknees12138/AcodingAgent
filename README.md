@@ -43,11 +43,13 @@
       逻辑调用键、PostgreSQL 预算预留/结算/释放/UNKNOWN 状态、统一 Agent
       Loop、角色 Tool ACL、文件/命令参数安全校验、trajectory/model response
       Artifact 和四个 Role Prompt v1。已提供 `json_schema` / `json_object`
-      兼容模式及真实端点 smoke test。待完成：sandbox RPC backend、角色输出
-      Artifact 持久化、model Activity/Worker。
+      兼容模式及真实端点 smoke test；model worker 已接入 Planner Activity，
+      会执行预算预留、严格结构化输出、计划校验与 ChangePlan Artifact 持久化。
+      待完成：sandbox RPC backend 与 QA/Developer/Reviewer Activity。
 - [ ] Milestone 7（进行中）：已实现 ChangePlan/WorkItem 跨对象校验、环检测、
       路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner/QA/
-      Developer/Reviewer Activity、Repair loop 与完整 E2E 尚未接入。
+      Developer/Reviewer 中 Planner 已接入主 Workflow；其余角色、Repair loop
+      与完整 E2E 尚未接入。
 - [ ] Milestone 8：评测与交付
 
 控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载
@@ -144,6 +146,9 @@ uv run pytest tests/security
 
 ```bash
 uv run repopilot-worker orchestration
+uv run repopilot-worker repository
+uv run repopilot-worker sandbox
+uv run repopilot-worker model
 ```
 
 ## 数据库迁移

@@ -9,7 +9,9 @@ from uuid import UUID
 from pydantic import Field
 
 from repopilot.domain import StrictModel
+from repopilot.domain.enums import RiskFlag
 from repopilot.domain.plans import ChangePlan, WorkItem
+from repopilot.domain.policies import dependency_manifest_paths
 
 
 class InvalidPlanError(ValueError):
@@ -30,6 +32,62 @@ def normalize_plan_path(path: str) -> str:
     return normalized
 
 
+def validate_change_plan(plan: ChangePlan) -> None:
+    """Validate the plan before it is persisted or approved."""
+    if not plan.files:
+        raise InvalidPlanError("ChangePlan 至少要包含一个文件变更")
+    if len(plan.files) > 20:
+        raise InvalidPlanError("Phase 0 单个计划最多修改 20 个文件")
+
+    item_ids = {file.work_item_id for file in plan.files}
+    normalized_paths = [normalize_plan_path(file.path) for file in plan.files]
+    if len(set(normalized_paths)) != len(normalized_paths):
+        raise InvalidPlanError("规范化后路径重复或有多个 Owner")
+    owner_by_item: dict[UUID, str] = {}
+    for file in plan.files:
+        previous_owner = owner_by_item.setdefault(file.work_item_id, file.owner)
+        if previous_owner != file.owner:
+            raise InvalidPlanError(f"WorkItem {file.work_item_id} 的 Owner 不一致")
+        for required_interface in file.required_interfaces:
+            normalize_plan_path(required_interface)
+
+    adjacency: dict[UUID, set[UUID]] = {item_id: set() for item_id in item_ids}
+    indegree: dict[UUID, int] = {item_id: 0 for item_id in item_ids}
+    for upstream, downstream in plan.dependency_edges:
+        if upstream not in item_ids or downstream not in item_ids:
+            raise InvalidPlanError("dependency edge 两端必须引用计划中的 WorkItem")
+        if upstream == downstream:
+            raise InvalidPlanError("WorkItem 不能依赖自身")
+        if downstream not in adjacency[upstream]:
+            adjacency[upstream].add(downstream)
+            indegree[downstream] += 1
+
+    ready = [item_id for item_id, degree in indegree.items() if degree == 0]
+    processed = 0
+    while ready:
+        current = ready.pop()
+        processed += 1
+        for downstream in adjacency[current]:
+            indegree[downstream] -= 1
+            if indegree[downstream] == 0:
+                ready.append(downstream)
+    if processed != len(item_ids):
+        raise InvalidPlanError("ChangePlan dependency graph 存在环")
+
+
+def add_inferred_risk_flags(plan: ChangePlan) -> ChangePlan:
+    """Do not rely on the model to self-report path-obvious risks."""
+    paths = tuple(normalize_plan_path(file.path) for file in plan.files)
+    flags = set(plan.risk_flags)
+    if dependency_manifest_paths(paths):
+        flags.add(RiskFlag.DEPENDENCY_CHANGE)
+    if any(path.startswith(".github/workflows/") for path in paths):
+        flags.add(RiskFlag.CI_CONFIG)
+    if len(paths) >= 10:
+        flags.add(RiskFlag.LARGE_SCOPE)
+    return plan.model_copy(update={"risk_flags": tuple(sorted(flags, key=lambda flag: flag.value))})
+
+
 def build_schedule(
     plan: ChangePlan,
     work_items: tuple[WorkItem, ...],
@@ -38,8 +96,7 @@ def build_schedule(
 ) -> SchedulePlan:
     if not 1 <= max_concurrency <= 4:
         raise InvalidPlanError("Phase 0 Developer 并发数必须在 1..4")
-    if len(plan.files) > 20:
-        raise InvalidPlanError("Phase 0 单个计划最多修改 20 个文件")
+    validate_change_plan(plan)
 
     item_ids = tuple(item.work_item_id for item in work_items)
     if len(set(item_ids)) != len(item_ids):

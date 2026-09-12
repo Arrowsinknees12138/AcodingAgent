@@ -31,7 +31,11 @@ from repopilot.infrastructure.temporal.client import (
     workflow_id_for,
 )
 from repopilot.infrastructure.temporal.converter import data_converter
-from repopilot.services.task_queues import REPOSITORY_TASK_QUEUE, SANDBOX_TASK_QUEUE
+from repopilot.services.task_queues import (
+    MODEL_TASK_QUEUE,
+    REPOSITORY_TASK_QUEUE,
+    SANDBOX_TASK_QUEUE,
+)
 from repopilot.workflows.code_repair import CodeRepairWorkflow, CodeRepairWorkflowInput
 from repopilot.workflows.updates import ApprovalRequest
 from tests.integration.conftest import FakePipelineActivities
@@ -361,6 +365,11 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
             task_queue=SANDBOX_TASK_QUEUE,
             activities=[fake_pipeline.verify_baseline],
         )
+        model_worker = Worker(
+            env.client,
+            task_queue=MODEL_TASK_QUEUE,
+            activities=[fake_pipeline.plan_change],
+        )
         workflow_input = _make_input(auto_approve_low_risk=False)
         first_worker = Worker(
             env.client,
@@ -369,7 +378,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
             activities=[projection_activities.update_projection],
             max_cached_workflows=0,
         )
-        async with repository_worker, sandbox_worker:
+        async with repository_worker, sandbox_worker, model_worker:
             async with first_worker:
                 handle = await env.client.start_workflow(
                     CodeRepairWorkflow.run,

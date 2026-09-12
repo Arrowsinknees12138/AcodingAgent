@@ -59,7 +59,10 @@ class FakeModelProvider:
             ),
         )
         try:
-            output = output_type.model_validate(value)
+            # Match the real provider's JSON boundary. Strict models reject
+            # JSON strings for UUID/tuple fields when validated as Python data,
+            # while model_validate_json correctly applies JSON decoding first.
+            output = output_type.model_validate_json(json.dumps(value, ensure_ascii=False))
         except ValidationError as exc:
             raise ModelOutputInvalidError(
                 "Fake Model 输出不符合 Schema",

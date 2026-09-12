@@ -8,7 +8,7 @@ import pytest
 
 from repopilot.domain.enums import RiskFlag
 from repopilot.domain.plans import ChangePlan, PlannedFileChange, WorkItem
-from repopilot.services.scheduler import InvalidPlanError, build_schedule
+from repopilot.services.scheduler import InvalidPlanError, add_inferred_risk_flags, build_schedule
 
 RUN_ID = uuid4()
 
@@ -128,3 +128,17 @@ def test_allowed_write_paths_must_match_planned_ownership() -> None:
             _plan((_file(item_id, "src/app.py", owner="dev-a"),)),
             (_item(item_id, "src/other.py", owner="dev-a"),),
         )
+
+
+def test_path_obvious_risks_are_added_even_if_model_omits_them() -> None:
+    first, second = uuid4(), uuid4()
+    plan = _plan(
+        (
+            _file(first, "pyproject.toml", owner="dev-a"),
+            _file(second, ".github/workflows/ci.yml", owner="dev-b"),
+        )
+    ).model_copy(update={"risk_flags": ()})
+
+    inferred = add_inferred_risk_flags(plan)
+
+    assert set(inferred.risk_flags) == {RiskFlag.DEPENDENCY_CHANGE, RiskFlag.CI_CONFIG}

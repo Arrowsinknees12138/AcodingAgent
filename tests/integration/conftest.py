@@ -23,15 +23,20 @@ from temporalio.worker import Worker
 from testcontainers.community.postgres import PostgresContainer
 
 from repopilot.activities.ingest import FinalizeTaskSpecInput
+from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.domain.artifacts import ArtifactRef
-from repopilot.domain.enums import ArtifactKind
+from repopilot.domain.enums import ArtifactKind, RiskLevel
 from repopilot.domain.tasks import IngestResult
 from repopilot.infrastructure.db.models import Base
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
 from repopilot.infrastructure.temporal.client import ORCHESTRATION_TASK_QUEUE
 from repopilot.infrastructure.temporal.converter import data_converter
-from repopilot.services.task_queues import REPOSITORY_TASK_QUEUE, SANDBOX_TASK_QUEUE
+from repopilot.services.task_queues import (
+    MODEL_TASK_QUEUE,
+    REPOSITORY_TASK_QUEUE,
+    SANDBOX_TASK_QUEUE,
+)
 from repopilot.workflows.code_repair import CodeRepairWorkflow
 
 
@@ -85,6 +90,13 @@ class FakePipelineActivities:
     async def verify_baseline(self, snapshot_ref: ArtifactRef) -> ArtifactRef:
         return _derived_ref(snapshot_ref, ArtifactKind.BASELINE_REPORT)
 
+    @activity.defn(name="plan_change")
+    async def plan_change(self, payload: PlanChangeInput) -> PlanChangeResult:
+        return PlanChangeResult(
+            plan_ref=_derived_ref(payload.task_spec_ref, ArtifactKind.CHANGE_PLAN),
+            risk_level=RiskLevel.LOW,
+        )
+
 
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
@@ -132,5 +144,10 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
             task_queue=SANDBOX_TASK_QUEUE,
             activities=[fake_pipeline.verify_baseline],
         )
-        async with worker, repository_worker, sandbox_worker:
+        model_worker = Worker(
+            env.client,
+            task_queue=MODEL_TASK_QUEUE,
+            activities=[fake_pipeline.plan_change],
+        )
+        async with worker, repository_worker, sandbox_worker, model_worker:
             yield env.client

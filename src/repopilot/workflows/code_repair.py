@@ -1,7 +1,7 @@
 """`CodeRepairWorkflow`（实施设计第 8 节）。
 
-当前已接入真实 ingest、repository scan、baseline verification Activity；
-Planner/QA/Developer/Reviewer 仍保留状态占位，等待对应角色 Activity 接线。
+当前已接入真实 ingest、repository scan、baseline verification 和 Planner
+Activity；QA/Developer/Reviewer 仍保留状态占位，等待对应角色 Activity 接线。
 状态序列完整遵循 8.6 节，不通过额外捷径跳过审批或终态清理闸口。
 
 `workflows` 层不允许任何外部 I/O（第 6 节）：这里唯一的副作用是通过
@@ -20,6 +20,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
+from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.repository import RepositoryActivities
 from repopilot.activities.verification import VerificationActivities
@@ -33,7 +34,11 @@ from repopilot.domain.policies import (
     resolve_approval_policy,
 )
 from repopilot.services.run_projection import ProjectionEvent
-from repopilot.services.task_queues import REPOSITORY_TASK_QUEUE, SANDBOX_TASK_QUEUE
+from repopilot.services.task_queues import (
+    MODEL_TASK_QUEUE,
+    REPOSITORY_TASK_QUEUE,
+    SANDBOX_TASK_QUEUE,
+)
 from repopilot.workflows.transitions import validate_transition
 from repopilot.workflows.updates import ApprovalKind, ApprovalRequest, validate_approval
 
@@ -41,8 +46,11 @@ _PROJECTION_RETRY_POLICY = RetryPolicy(maximum_attempts=5)
 _PROJECTION_START_TO_CLOSE = timedelta(seconds=30)
 _PROJECTION_SCHEDULE_TO_START = timedelta(seconds=30)
 _SERVICE_ACTIVITY_RETRY_POLICY = RetryPolicy(maximum_attempts=3)
+_MODEL_ACTIVITY_RETRY_POLICY = RetryPolicy(maximum_attempts=1)
 _REPOSITORY_START_TO_CLOSE = timedelta(minutes=10)
 _SANDBOX_START_TO_CLOSE = timedelta(minutes=15)
+_MODEL_START_TO_CLOSE = timedelta(minutes=10)
+_MODEL_SCHEDULE_TO_START = timedelta(minutes=2)
 
 
 class CodeRepairWorkflowInput(StrictModel):
@@ -76,7 +84,6 @@ class CodeRepairWorkflow:
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
         self._workflow_id = workflow.info().workflow_id
-        approval_stages = self._resolve_approval_stages(workflow_input)
         await self._record_projection(workflow_input)  # 记录初始 QUEUED
 
         try:
@@ -130,6 +137,21 @@ class CodeRepairWorkflow:
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
             await self._transition(workflow_input, RunStatus.PLANNING)
+            planning_result = await workflow.execute_activity_method(
+                PlanningActivities.plan_change,
+                PlanChangeInput(
+                    task_spec_ref=task_spec_ref,
+                    repository_snapshot_ref=snapshot_ref,
+                ),
+                task_queue=MODEL_TASK_QUEUE,
+                schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+            )
+            approval_stages = self._resolve_approval_stages(
+                workflow_input,
+                planned_risk=planning_result.risk_level,
+            )
 
             if approval_stages.plan is ApprovalMode.MANUAL:
                 approval = await self._wait_for_approval(
@@ -189,9 +211,14 @@ class CodeRepairWorkflow:
     @staticmethod
     def _resolve_approval_stages(
         workflow_input: CodeRepairWorkflowInput,
+        planned_risk: RiskLevel | None = None,
     ) -> ApprovalStagePolicy:
+        risk_order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
+        effective_risk = workflow_input.risk_level
+        if planned_risk is not None and risk_order[planned_risk] > risk_order[effective_risk]:
+            effective_risk = planned_risk
         stages = resolve_approval_policy(
-            workflow_input.risk_level,
+            effective_risk,
             workflow_input.approval_policy,
         ).stages
         if workflow_input.auto_approve_low_risk is None:
