@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -17,7 +17,7 @@ from repopilot.domain.artifacts import (
     RepositorySnapshot,
 )
 from repopilot.domain.enums import ArtifactKind, RiskLevel
-from repopilot.domain.plans import ChangePlan
+from repopilot.domain.plans import ChangePlan, WorkItem
 from repopilot.domain.policies import classify_risk
 from repopilot.domain.tasks import TaskSpec
 from repopilot.services.artifact_store import ArtifactStore
@@ -35,6 +35,8 @@ from repopilot.services.model_gateway import (
 from repopilot.services.scheduler import (
     InvalidPlanError,
     add_inferred_risk_flags,
+    build_schedule,
+    materialize_work_items,
     validate_change_plan,
 )
 
@@ -48,6 +50,8 @@ class PlanChangeInput(StrictModel):
 class PlanChangeResult(StrictModel):
     plan_ref: ArtifactRef
     risk_level: RiskLevel
+    work_items: tuple[WorkItem, ...]
+    waves: tuple[tuple[UUID, ...], ...]
 
 
 class PlanningActivities:
@@ -183,9 +187,13 @@ class PlanningActivities:
                 ),
             ),
         )
+        work_items = materialize_work_items(plan, task.run_id)
+        schedule = build_schedule(plan, work_items)
         return PlanChangeResult(
             plan_ref=plan_ref,
             risk_level=classify_risk(plan.risk_flags),
+            work_items=work_items,
+            waves=schedule.waves,
         )
 
 

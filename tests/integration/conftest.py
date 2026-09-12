@@ -29,6 +29,7 @@ from repopilot.activities.qa import DesignSealedTestsInput
 from repopilot.activities.verification import VerifySealedTestsInput, VerifySealedTestsResult
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ArtifactKind, RiskLevel
+from repopilot.domain.plans import WorkItem
 from repopilot.domain.tasks import IngestResult
 from repopilot.infrastructure.db.models import Base
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
@@ -106,9 +107,21 @@ class FakePipelineActivities:
 
     @activity.defn(name="plan_change")
     async def plan_change(self, payload: PlanChangeInput) -> PlanChangeResult:
+        work_item = WorkItem(
+            work_item_id=uuid4(),
+            run_id=payload.task_spec_ref.run_id,
+            kind="code",
+            dependencies=(),
+            allowed_write_paths=("src/app.py",),
+            read_paths=("src/app.py",),
+            owner="developer-1",
+            attempt=1,
+        )
         return PlanChangeResult(
             plan_ref=_derived_ref(payload.task_spec_ref, ArtifactKind.CHANGE_PLAN),
             risk_level=RiskLevel.LOW,
+            work_items=(work_item,),
+            waves=((work_item.work_item_id,),),
         )
 
     @activity.defn(name="design_sealed_tests")

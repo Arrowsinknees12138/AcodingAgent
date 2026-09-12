@@ -88,6 +88,38 @@ def add_inferred_risk_flags(plan: ChangePlan) -> ChangePlan:
     return plan.model_copy(update={"risk_flags": tuple(sorted(flags, key=lambda flag: flag.value))})
 
 
+def materialize_work_items(plan: ChangePlan, run_id: UUID) -> tuple[WorkItem, ...]:
+    """Build the executable work-item set from a validated change plan."""
+    validate_change_plan(plan)
+    dependencies_by_item: dict[UUID, set[UUID]] = defaultdict(set)
+    for upstream, downstream in plan.dependency_edges:
+        dependencies_by_item[downstream].add(upstream)
+
+    files_by_item: dict[UUID, list[str]] = defaultdict(list)
+    reads_by_item: dict[UUID, set[str]] = defaultdict(set)
+    owner_by_item: dict[UUID, str] = {}
+    for file in plan.files:
+        files_by_item[file.work_item_id].append(normalize_plan_path(file.path))
+        reads_by_item[file.work_item_id].update(
+            normalize_plan_path(path) for path in file.required_interfaces
+        )
+        owner_by_item[file.work_item_id] = file.owner
+
+    return tuple(
+        WorkItem(
+            work_item_id=item_id,
+            run_id=run_id,
+            kind="code",
+            dependencies=tuple(sorted(dependencies_by_item[item_id], key=str)),
+            allowed_write_paths=tuple(sorted(files_by_item[item_id])),
+            read_paths=tuple(sorted(reads_by_item[item_id].union(files_by_item[item_id]))),
+            owner=owner_by_item[item_id],
+            attempt=1,
+        )
+        for item_id in sorted(files_by_item, key=str)
+    )
+
+
 def build_schedule(
     plan: ChangePlan,
     work_items: tuple[WorkItem, ...],

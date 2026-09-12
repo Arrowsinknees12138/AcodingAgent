@@ -99,5 +99,9 @@ async def test_planner_produces_validated_change_plan_artifact() -> None:
     assert persisted == expected
     assert result.plan_ref.kind is ArtifactKind.CHANGE_PLAN
     assert result.risk_level.value == "low"
+    assert len(result.work_items) == 1
+    assert result.work_items[0].work_item_id == item_id
+    assert result.work_items[0].allowed_write_paths == ("src/app.py",)
+    assert result.waves == ((item_id,),)
     assert len(provider.requests) == 1
     assert len(budget.settled) == 1

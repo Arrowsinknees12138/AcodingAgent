@@ -8,7 +8,12 @@ import pytest
 
 from repopilot.domain.enums import RiskFlag
 from repopilot.domain.plans import ChangePlan, PlannedFileChange, WorkItem
-from repopilot.services.scheduler import InvalidPlanError, add_inferred_risk_flags, build_schedule
+from repopilot.services.scheduler import (
+    InvalidPlanError,
+    add_inferred_risk_flags,
+    build_schedule,
+    materialize_work_items,
+)
 
 RUN_ID = uuid4()
 
@@ -72,6 +77,36 @@ def test_schedule_releases_downstream_only_after_upstreams() -> None:
     )
     assert set(schedule.waves[0]) == {first, second}
     assert schedule.waves[1] == (third,)
+
+
+def test_materialize_work_items_groups_paths_interfaces_and_dependencies() -> None:
+    first, second = uuid4(), uuid4()
+    plan = _plan(
+        (
+            _file(first, "src/a.py", owner="dev-a"),
+            PlannedFileChange(
+                work_item_id=first,
+                path="tests/test_a.py",
+                operation="modify",
+                owner="dev-a",
+                responsibility="cover fix",
+                required_interfaces=("src/shared.py",),
+            ),
+            _file(second, "src/b.py", owner="dev-b"),
+        ),
+        ((first, second),),
+    )
+
+    items = {item.work_item_id: item for item in materialize_work_items(plan, RUN_ID)}
+
+    assert items[first].allowed_write_paths == ("src/a.py", "tests/test_a.py")
+    assert items[first].read_paths == (
+        "src/a.py",
+        "src/shared.py",
+        "tests/test_a.py",
+    )
+    assert items[second].dependencies == (first,)
+    assert items[second].owner == "dev-b"
 
 
 def test_schedule_chunks_independent_work_at_four() -> None:
