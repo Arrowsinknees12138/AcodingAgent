@@ -19,6 +19,8 @@ class ToolContext(StrictModel):
     sandbox_id: UUID | None
     read_paths: tuple[str, ...]
     write_paths: tuple[str, ...]
+    read_all_repository_files: bool = False
+    command_sandbox_on_demand: bool = False
 
 
 class Tool(Protocol):
@@ -44,7 +46,7 @@ _ROLE_TOOLS: dict[AgentRole, frozenset[str]] = {
     AgentRole.PLANNER: frozenset({"read_file", "search_code", "finish"}),
     AgentRole.QA: frozenset({"read_file", "search_code", "finish"}),
     AgentRole.DEVELOPER: frozenset(
-        {"read_file", "search_code", "write_file", "run_command", "finish"}
+        {"read_file", "search_code", "write_file", "delete_file", "run_command", "finish"}
     ),
     AgentRole.REVIEWER: frozenset({"read_file", "finish"}),
 }

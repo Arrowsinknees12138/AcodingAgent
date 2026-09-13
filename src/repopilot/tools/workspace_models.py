@@ -44,3 +44,22 @@ class WriteFileRequest(StrictModel):
 class WriteFileResult(StrictModel):
     path: str
     size_bytes: int = Field(ge=0)
+
+
+class DeleteFileRequest(StrictModel):
+    path: str
+
+
+class DeleteFileResult(StrictModel):
+    path: str
+    deleted: bool
+
+
+class WorkspaceCommandResult(StrictModel):
+    exit_code: int | None
+    timed_out: bool
+    oom_killed: bool
+    duration_ms: int
+    stdout: str
+    stderr: str
+    truncated: bool

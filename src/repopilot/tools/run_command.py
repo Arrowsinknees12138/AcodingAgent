@@ -25,7 +25,7 @@ class RunCommandTool:
         normalized_cwd = (
             "." if typed.cwd in {".", "/workspace"} else normalize_relative_path(typed.cwd)
         )
-        if context.sandbox_id is None:
+        if context.sandbox_id is None and not context.command_sandbox_on_demand:
             raise ValueError("run_command 需要已创建的 sandbox")
         return await self._backend.run_command(
             typed.model_copy(update={"cwd": normalized_cwd}), context
