@@ -396,7 +396,8 @@ class GitRepositoryService:
             cwd=integration_path,
         )
         try:
-            patch_file.write_text(patch_text, encoding="utf-8")
+            # Text-mode writes turn LF into CRLF on Windows and break git apply's context match.
+            patch_file.write_bytes(patch_bytes)
             try:
                 await self._git.run(["apply", "--check", str(patch_file)], cwd=staging_path)
             except GitCommandError as exc:
