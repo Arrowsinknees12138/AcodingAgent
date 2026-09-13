@@ -2054,6 +2054,11 @@ class FinalReport(StrictModel):
 意外 Activity 异常使用 `PLATFORM_ERROR` 进入 `FAILED` 并通过相同清理闸口；
 未完成 Ingest 时报告以全零 base revision 明示未知，不把内部异常文本回显给用户。
 
+Repair 输入边界：每轮从当前 integration worktree 生成新 Snapshot；Planner
+只能规划首轮已批准的写路径子集，校验 create/modify/delete 与当前树是否一致。
+Verification/Reviewer Artifact 只提取有限的 finding 摘要供 Planner/Developer
+使用，不透传 sealed test bundle 或原始日志。每次修复使用新的模型 attempt。
+
 报告必须区分：
 
 - 平台错误。

@@ -1,11 +1,17 @@
+import io
+import tarfile
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
+from temporalio.exceptions import ApplicationError
 
 from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, RepositorySnapshot
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.plans import ChangePlan, PlannedFileChange
 from repopilot.domain.tasks import BudgetInput, TaskSpec
+from repopilot.domain.verification import TestSummary, VerificationReport
 from repopilot.infrastructure.model.fake import FakeModelProvider
 from repopilot.services.model_gateway import BudgetedModelGateway
 from tests.fakes import MemoryArtifactStore, RecordingBudgetStore
@@ -105,3 +111,92 @@ async def test_planner_produces_validated_change_plan_artifact() -> None:
     assert result.waves == ((item_id,),)
     assert len(provider.requests) == 1
     assert len(budget.settled) == 1
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        content = b"def broken():\n    return 1\n"
+        info = tarfile.TarInfo("src/app.py")
+        info.size = len(content)
+        tar.addfile(info, io.BytesIO(content))
+    candidate_source_ref = await store.put_bytes(
+        ArtifactKind.SOURCE_ARCHIVE, archive.getvalue(), metadata
+    )
+    candidate_snapshot_ref = await store.put_bytes(
+        ArtifactKind.REPOSITORY_SNAPSHOT,
+        snapshot.model_copy(update={"source_archive_ref": candidate_source_ref})
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
+    log_ref = await store.put_bytes(ArtifactKind.LOG, b"SEALED TEST SOURCE SECRET", metadata)
+    baseline_ref = await store.put_bytes(ArtifactKind.BASELINE_REPORT, b"{}", metadata)
+    feedback_ref = await store.put_bytes(
+        ArtifactKind.VERIFICATION_REPORT,
+        VerificationReport(
+            candidate_revision="b" * 40,
+            baseline_report_ref=baseline_ref,
+            passed=False,
+            findings=(),
+            baseline_summary=TestSummary(passed=0, failed=0, skipped=0, failed_test_ids=()),
+            candidate_summary=TestSummary(passed=0, failed=1, skipped=0, failed_test_ids=()),
+            regression_test_ids=(),
+            regression_count=0,
+            stdout_ref=log_ref,
+        )
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
+    repair_planner = PlanningActivities(
+        artifact_store=store,
+        gateway=BudgetedModelGateway(FakeModelProvider([expected], store), RecordingBudgetStore()),
+        model="fake-model",
+        reservation_usd=Decimal("0.10"),
+    )
+    repair = await repair_planner.plan_change(
+        PlanChangeInput(
+            task_spec_ref=task_ref,
+            repository_snapshot_ref=candidate_snapshot_ref,
+            attempt=2,
+            repair_feedback_ref=feedback_ref,
+            allowed_repair_paths=("src/app.py",),
+        )
+    )
+    assert repair.work_items[0].kind == "repair"
+    assert repair.work_items[0].attempt == 2
+    trajectories = [
+        store.content[ref.artifact_id] for ref in store.refs if ref.kind is ArtifactKind.TRAJECTORY
+    ]
+    assert b"SEALED TEST SOURCE SECRET" not in trajectories[-1]
+
+    with pytest.raises(ApplicationError, match="PLAN_INVALID"):
+        await PlanningActivities(
+            artifact_store=store,
+            gateway=BudgetedModelGateway(
+                FakeModelProvider(
+                    [
+                        expected.model_copy(
+                            update={
+                                "files": (
+                                    expected.files[0].model_copy(
+                                        update={"path": "src/unplanned.py", "operation": "create"}
+                                    ),
+                                )
+                            }
+                        )
+                    ],
+                    store,
+                ),
+                RecordingBudgetStore(),
+            ),
+            model="fake-model",
+            reservation_usd=Decimal("0.10"),
+        ).plan_change(
+            PlanChangeInput(
+                task_spec_ref=task_ref,
+                repository_snapshot_ref=candidate_snapshot_ref,
+                attempt=3,
+                repair_feedback_ref=feedback_ref,
+                allowed_repair_paths=("src/app.py",),
+            )
+        )

@@ -36,6 +36,7 @@ from repopilot.services.model_gateway import (
     ModelTemporarilyUnavailableError,
     build_logical_call_key,
 )
+from repopilot.services.repair_feedback import summarize_repair_feedback
 from repopilot.services.scheduler import normalize_plan_path
 
 _MAX_CONTEXT_FILE_BYTES = 1024 * 1024
@@ -47,6 +48,7 @@ class DevelopPatchInput(StrictModel):
     developer_context_ref: ArtifactRef
     task_spec_ref: ArtifactRef
     planned_files: tuple[PlannedFileChange, ...]
+    repair_feedback_ref: ArtifactRef | None = None
 
 
 class DeveloperActivities:
@@ -103,6 +105,21 @@ class DeveloperActivities:
             json.loads(await self._artifacts.get_bytes(interface_ref, caller))
             for interface_ref in context.upstream_interface_refs
         ]
+        repair_feedback: dict[str, object] | None = None
+        if payload.repair_feedback_ref is not None:
+            feedback_ref = payload.repair_feedback_ref
+            if (
+                context.work_item.kind != "repair"
+                or feedback_ref.run_id != context_ref.run_id
+                or feedback_ref.tenant_id != context_ref.tenant_id
+            ):
+                raise ApplicationError(
+                    "Developer repair feedback scope mismatch", non_retryable=True
+                )
+            repair_feedback = summarize_repair_feedback(
+                feedback_ref.kind,
+                await self._artifacts.get_bytes(feedback_ref, caller),
+            )
         trajectory_ref = await self._artifacts.put_bytes(
             ArtifactKind.TRAJECTORY,
             json.dumps(
@@ -118,6 +135,7 @@ class DeveloperActivities:
                                 ],
                                 "visible_source_files": source_files,
                                 "upstream_interfaces": upstream_interfaces,
+                                "repair_feedback": repair_feedback,
                             },
                         }
                     ]
@@ -135,6 +153,11 @@ class DeveloperActivities:
                     task_ref.artifact_id,
                     context.source_archive_ref.artifact_id,
                     *(ref.artifact_id for ref in context.upstream_interface_refs),
+                    *(
+                        (payload.repair_feedback_ref.artifact_id,)
+                        if payload.repair_feedback_ref is not None
+                        else ()
+                    ),
                 ),
             ),
         )
@@ -148,7 +171,11 @@ class DeveloperActivities:
                 model_parameters={"temperature": 0.0, "top_p": 1.0, "max_output_tokens": 16384},
                 prompt_version="developer-v1",
                 tool_schema_version="none",
-                ordered_input_artifact_hashes=(context_ref.sha256, task_ref.sha256),
+                ordered_input_artifact_hashes=(
+                    context_ref.sha256,
+                    task_ref.sha256,
+                    *((payload.repair_feedback_ref.sha256,) if payload.repair_feedback_ref else ()),
+                ),
                 policy_version="1",
             ),
             model=self._model,
