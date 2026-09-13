@@ -50,6 +50,9 @@ def _fake_create_request_ref(
     candidate_should_fail: bool = False,
     reviewer_should_block: bool = False,
     ingest_should_fail: bool = False,
+    candidate_repairs_once: bool = False,
+    reviewer_repairs_once: bool = False,
+    dependency_change: bool = False,
 ) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
@@ -65,7 +68,21 @@ def _fake_create_request_ref(
             else (
                 4
                 if ingest_should_fail
-                else (2 if candidate_should_fail else (3 if reviewer_should_block else 1))
+                else (
+                    5
+                    if candidate_repairs_once
+                    else (
+                        7
+                        if dependency_change
+                        else (
+                            6
+                            if reviewer_repairs_once
+                            else (
+                                2 if candidate_should_fail else (3 if reviewer_should_block else 1)
+                            )
+                        )
+                    )
+                )
             )
         ),
         base_revision=None,
@@ -141,6 +158,7 @@ async def test_candidate_verification_failure_stops_before_review(
     assert result.status is RunStatus.FAILED
     assert result.final_report_ref is not None
     assert result.failure is not None
+    assert result.failure.code is ErrorCode.VERIFICATION_FAILED
 
 
 async def test_ingest_failure_still_finalizes_without_exposing_exception_text(
@@ -165,6 +183,87 @@ async def test_ingest_failure_still_finalizes_without_exposing_exception_text(
     assert "secret" not in result.failure.message
 
 
+@pytest.mark.parametrize("repair_source", ["verification", "reviewer"])
+async def test_one_repair_round_can_recover(temporal_client: Client, repair_source: str) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(
+            candidate_repairs_once=repair_source == "verification",
+            reviewer_repairs_once=repair_source == "reviewer",
+        ),
+        auto_approve_low_risk=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    result = await handle.result()
+    assert result.status is RunStatus.SUCCEEDED
+    assert result.final_report_ref is not None
+
+
+async def test_dependency_change_rebuilds_candidate_layer(temporal_client: Client) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(dependency_change=True),
+        auto_approve_low_risk=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+
+
+async def test_medium_risk_repair_requires_fresh_plan_approval(temporal_client: Client) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(candidate_repairs_once=True),
+        risk_level=RiskLevel.MEDIUM,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_PLAN_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="plan",
+            decision="approve",
+            actor_id="human-1",
+            reason="first plan",
+        ),
+    )
+    for _ in range(200):
+        if await handle.query(CodeRepairWorkflow.get_repair_rounds) == 1:
+            break
+    else:
+        pytest.fail("repair round did not begin")
+    await _wait_for_status(handle, RunStatus.WAITING_PLAN_APPROVAL)
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="plan",
+            decision="approve",
+            actor_id="human-1",
+            reason="repair plan",
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+
+
 async def test_reviewer_blocker_prevents_delivery(temporal_client: Client) -> None:
     workflow_input = CodeRepairWorkflowInput(
         run_id=uuid4(),
@@ -183,6 +282,7 @@ async def test_reviewer_blocker_prevents_delivery(temporal_client: Client) -> No
     assert result.status is RunStatus.FAILED
     assert result.final_report_ref is not None
     assert result.failure is not None
+    assert result.failure.code is ErrorCode.REVIEW_REJECTED
 
 
 async def test_missing_acceptance_criteria_requires_requirements_approval(

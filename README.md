@@ -52,7 +52,9 @@
       路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner、QA、
       Developer、候选 Verification、Reviewer 均已接入主 Workflow，并按 DAG wave 最多
       并发 4 个 Developer。各终态现会清理沙箱/工作区并生成 Cleanup/Final Report，
-      包含 diff、验证、评审与模型费用引用。待完成：Repair loop、真实仓库完整 E2E。
+      包含 diff、验证、评审与模型费用引用。Verification/Reviewer 失败会在原批准
+      路径内最多修复两轮，重规划按风险重新审批；授权的依赖清单变更会为候选
+      重新构建受控依赖层。待完成：真实仓库完整 E2E。
 - [ ] Milestone 8：评测与交付
 
 控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载

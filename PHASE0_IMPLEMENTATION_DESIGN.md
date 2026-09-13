@@ -2058,6 +2058,9 @@ Repair 输入边界：每轮从当前 integration worktree 生成新 Snapshot；
 只能规划首轮已批准的写路径子集，校验 create/modify/delete 与当前树是否一致。
 Verification/Reviewer Artifact 只提取有限的 finding 摘要供 Planner/Developer
 使用，不透传 sealed test bundle 或原始日志。每次修复使用新的模型 attempt。
+Workflow 的全局 repair_round 最多 2；每轮新计划重新应用对应风险的 Plan/
+Execution approval，旧 Approval Update 消费后移除，不会被下一轮复用。若
+已授权的依赖清单在候选中被修改，则候选测试前按当前源码重新构建受控依赖层。
 
 报告必须区分：
 

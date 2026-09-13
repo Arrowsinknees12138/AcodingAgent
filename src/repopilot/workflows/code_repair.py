@@ -21,7 +21,7 @@ from temporalio.common import RetryPolicy
 from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput
 from repopilot.activities.finalization import BuildFinalReportInput, FinalizationActivities
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
-from repopilot.activities.planning import PlanChangeInput, PlanningActivities
+from repopilot.activities.planning import PlanChangeInput, PlanChangeResult, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput, QaActivities
 from repopilot.activities.repository import (
@@ -45,6 +45,7 @@ from repopilot.domain.plans import PlannedFileChange
 from repopilot.domain.policies import (
     ApprovalPolicy,
     ApprovalStagePolicy,
+    dependency_manifest_paths,
     resolve_approval_policy,
 )
 from repopilot.services.run_projection import ProjectionEvent
@@ -84,6 +85,12 @@ class CodeRepairWorkflowOutput(StrictModel):
     status: RunStatus
     final_report_ref: ArtifactRef | None
     failure: ErrorInfo | None
+
+
+class CandidateAttemptResult(StrictModel):
+    verification_passed: bool
+    review_decision: str | None
+    feedback_ref: ArtifactRef
 
 
 @workflow.defn(name="CodeRepairWorkflow")
@@ -257,136 +264,102 @@ class CodeRepairWorkflow:
                     )
 
             await self._transition(workflow_input, RunStatus.EXECUTING)
-            work_items = {item.work_item_id: item for item in planning_result.work_items}
-            planned_files: dict[UUID, list[PlannedFileChange]] = {}
-            for planned_file in planning_result.planned_files:
-                planned_files.setdefault(planned_file.work_item_id, []).append(planned_file)
-            integrated_by_item: dict[UUID, ArtifactRef] = {}
-            for wave in planning_result.waves:
-                contexts = await asyncio.gather(
-                    *(
-                        workflow.execute_activity_method(
-                            RepositoryActivities.build_developer_context,
-                            BuildDeveloperContextInput(
-                                work_item=work_items[item_id],
-                                task_spec_ref=task_spec_ref,
-                                integrated_patch_refs=tuple(
-                                    integrated_by_item[dependency]
-                                    for dependency in work_items[item_id].dependencies
-                                ),
-                            ),
-                            task_queue=REPOSITORY_TASK_QUEUE,
-                            start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
-                            retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-                        )
-                        for item_id in wave
-                    )
-                )
-                proposals = await asyncio.gather(
-                    *(
-                        workflow.execute_activity_method(
-                            DeveloperActivities.develop_patch,
-                            DevelopPatchInput(
-                                developer_context_ref=context_ref,
-                                task_spec_ref=task_spec_ref,
-                                planned_files=tuple(planned_files[item_id]),
-                            ),
-                            task_queue=MODEL_TASK_QUEUE,
-                            schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
-                            start_to_close_timeout=_MODEL_START_TO_CLOSE,
-                            retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
-                        )
-                        for item_id, context_ref in zip(wave, contexts, strict=True)
-                    )
-                )
-                for item_id, proposal_ref in zip(wave, proposals, strict=True):
-                    integrated_by_item[item_id] = await workflow.execute_activity_method(
-                        RepositoryActivities.integrate_patch,
-                        IntegratePatchInput(
-                            proposal_ref=proposal_ref,
-                            work_item=work_items[item_id],
-                            task_spec_ref=task_spec_ref,
-                        ),
-                        task_queue=REPOSITORY_TASK_QUEUE,
-                        start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
-                        retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-                    )
-            await self._transition(workflow_input, RunStatus.VERIFYING)
-            candidate = await workflow.execute_activity_method(
-                RepositoryActivities.export_candidate,
-                task_spec_ref.run_id,
-                task_queue=REPOSITORY_TASK_QUEUE,
-                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
-            self._final_revision = candidate.revision
-            diff_ref = await workflow.execute_activity_method(
-                RepositoryActivities.build_final_diff,
-                task_spec_ref.run_id,
-                task_queue=REPOSITORY_TASK_QUEUE,
-                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
-            self._patch_ref = diff_ref
-            verification_result = await workflow.execute_activity_method(
-                VerificationActivities.verify_candidate,
-                VerifyCandidateInput(
+            original_allowed_paths = tuple(file.path for file in planning_result.planned_files)
+            highest_planned_risk = planning_result.risk_level
+            repair_feedback_ref: ArtifactRef | None = None
+            while True:
+                attempt = await self._run_candidate_attempt(
+                    workflow_input=workflow_input,
+                    task_spec_ref=task_spec_ref,
                     snapshot_ref=snapshot_ref,
                     baseline_report_ref=baseline_report_ref,
                     test_plan_ref=test_plan_ref,
-                    candidate_source_ref=candidate.source_archive_ref,
-                    candidate_revision=candidate.revision,
                     dependency_layer_key=dependency_result.dependency_layer_key,
-                ),
-                task_queue=SANDBOX_TASK_QUEUE,
-                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
-            self._verification_ref = verification_result.report_ref
-            if not verification_result.passed:
-                return await self._finalize(
-                    workflow_input,
-                    RunStatus.FAILED,
-                    error=self._error(
-                        ErrorCode.VERIFICATION_FAILED,
-                        "candidate verification failed",
-                        verification_result.report_ref,
-                    ),
+                    plan=planning_result,
+                    repair_feedback_ref=repair_feedback_ref,
                 )
-            await self._transition(workflow_input, RunStatus.REVIEWING)
-            review_result = await workflow.execute_activity_method(
-                ReviewerActivities.review_candidate,
-                ReviewCandidateInput(
-                    task_spec_ref=task_spec_ref,
-                    diff_ref=diff_ref,
-                    verification_ref=verification_result.report_ref,
-                ),
-                task_queue=MODEL_TASK_QUEUE,
-                schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
-                start_to_close_timeout=_MODEL_START_TO_CLOSE,
-                retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
-            )
-            self._review_ref = review_result.review_ref
-            if review_result.decision == "reject":
-                return await self._finalize(
-                    workflow_input,
-                    RunStatus.REJECTED,
-                    error=self._error(
-                        ErrorCode.REVIEW_REJECTED,
-                        "reviewer rejected candidate",
-                        review_result.review_ref,
-                    ),
+                if attempt.verification_passed and attempt.review_decision == "approve":
+                    break
+                if attempt.review_decision == "reject":
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(
+                            ErrorCode.REVIEW_REJECTED,
+                            "reviewer rejected candidate",
+                            attempt.feedback_ref,
+                        ),
+                    )
+                if self._repair_rounds >= 2:
+                    code = (
+                        ErrorCode.VERIFICATION_FAILED
+                        if not attempt.verification_passed
+                        else ErrorCode.REVIEW_REJECTED
+                    )
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.FAILED,
+                        error=self._error(code, "repair rounds exhausted", attempt.feedback_ref),
+                    )
+
+                self._repair_rounds += 1
+                repair_feedback_ref = attempt.feedback_ref
+                await self._transition(workflow_input, RunStatus.REPLANNING)
+                current_snapshot_ref = await workflow.execute_activity_method(
+                    RepositoryActivities.scan_repository,
+                    task_spec_ref,
+                    task_queue=REPOSITORY_TASK_QUEUE,
+                    start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
                 )
-            if review_result.decision == "request_changes":
-                return await self._finalize(
-                    workflow_input,
-                    RunStatus.FAILED,
-                    error=self._error(
-                        ErrorCode.REVIEW_REJECTED,
-                        "reviewer requested changes and repair is exhausted",
-                        review_result.review_ref,
+                await self._transition(workflow_input, RunStatus.PLANNING)
+                planning_result = await workflow.execute_activity_method(
+                    PlanningActivities.plan_change,
+                    PlanChangeInput(
+                        task_spec_ref=task_spec_ref,
+                        repository_snapshot_ref=current_snapshot_ref,
+                        attempt=self._repair_rounds + 1,
+                        repair_feedback_ref=repair_feedback_ref,
+                        allowed_repair_paths=original_allowed_paths,
                     ),
+                    task_queue=MODEL_TASK_QUEUE,
+                    schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                    start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                    retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
                 )
+                risk_order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
+                if risk_order[planning_result.risk_level] > risk_order[highest_planned_risk]:
+                    highest_planned_risk = planning_result.risk_level
+                repair_approvals = self._resolve_approval_stages(
+                    workflow_input, planned_risk=highest_planned_risk
+                )
+                if repair_approvals.plan is ApprovalMode.MANUAL:
+                    approval = await self._wait_for_approval(
+                        workflow_input,
+                        kind="plan",
+                        status=RunStatus.WAITING_PLAN_APPROVAL,
+                    )
+                    if approval.decision == "reject":
+                        return await self._finalize(
+                            workflow_input,
+                            RunStatus.REJECTED,
+                            error=self._error(ErrorCode.APPROVAL_REJECTED, "repair plan rejected"),
+                        )
+                if repair_approvals.execution is ApprovalMode.MANUAL:
+                    approval = await self._wait_for_approval(
+                        workflow_input,
+                        kind="execution",
+                        status=RunStatus.WAITING_EXECUTION_APPROVAL,
+                    )
+                    if approval.decision == "reject":
+                        return await self._finalize(
+                            workflow_input,
+                            RunStatus.REJECTED,
+                            error=self._error(
+                                ErrorCode.APPROVAL_REJECTED, "repair execution rejected"
+                            ),
+                        )
+                await self._transition(workflow_input, RunStatus.EXECUTING)
 
             if approval_stages.delivery is ApprovalMode.AUTOMATIC:
                 return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
@@ -404,9 +377,6 @@ class CodeRepairWorkflow:
                 )
             return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
         except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
-            # cleanup cancellation scope 的最小版本：取消请求到达后，仍然
-            # 执行一次 finalize，把状态机推进到 CANCELLED，而不是让 Workflow
-            # Task 直接以异常结束、停留在一个非终态上。
             return await asyncio.shield(
                 self._finalize(
                     workflow_input,
@@ -415,9 +385,6 @@ class CodeRepairWorkflow:
                 )
             )
         except Exception as exc:
-            # Unexpected Activity failures must still pass through FINALIZING. Do not
-            # expose untrusted exception text (which may contain credentials) in the
-            # user-facing report; the activity history retains diagnostic detail.
             if self._status is RunStatus.FINALIZING:
                 raise
             if workflow.cancellation_reason() is not None:
@@ -437,9 +404,159 @@ class CodeRepairWorkflow:
                 ),
             )
 
+    async def _run_candidate_attempt(
+        self,
+        *,
+        workflow_input: CodeRepairWorkflowInput,
+        task_spec_ref: ArtifactRef,
+        snapshot_ref: ArtifactRef,
+        baseline_report_ref: ArtifactRef,
+        test_plan_ref: ArtifactRef,
+        dependency_layer_key: str,
+        plan: PlanChangeResult,
+        repair_feedback_ref: ArtifactRef | None,
+    ) -> CandidateAttemptResult:
+        work_items = {item.work_item_id: item for item in plan.work_items}
+        planned_files: dict[UUID, list[PlannedFileChange]] = {}
+        for planned_file in plan.planned_files:
+            planned_files.setdefault(planned_file.work_item_id, []).append(planned_file)
+        integrated_by_item: dict[UUID, ArtifactRef] = {}
+        for wave in plan.waves:
+            contexts = await asyncio.gather(
+                *(
+                    workflow.execute_activity_method(
+                        RepositoryActivities.build_developer_context,
+                        BuildDeveloperContextInput(
+                            work_item=work_items[item_id],
+                            task_spec_ref=task_spec_ref,
+                            integrated_patch_refs=tuple(
+                                integrated_by_item[dependency]
+                                for dependency in work_items[item_id].dependencies
+                            ),
+                        ),
+                        task_queue=REPOSITORY_TASK_QUEUE,
+                        start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                        retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                    )
+                    for item_id in wave
+                )
+            )
+            proposals = await asyncio.gather(
+                *(
+                    workflow.execute_activity_method(
+                        DeveloperActivities.develop_patch,
+                        DevelopPatchInput(
+                            developer_context_ref=context_ref,
+                            task_spec_ref=task_spec_ref,
+                            planned_files=tuple(planned_files[item_id]),
+                            repair_feedback_ref=repair_feedback_ref,
+                        ),
+                        task_queue=MODEL_TASK_QUEUE,
+                        schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                        start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                        retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+                    )
+                    for item_id, context_ref in zip(wave, contexts, strict=True)
+                )
+            )
+            for item_id, proposal_ref in zip(wave, proposals, strict=True):
+                integrated_by_item[item_id] = await workflow.execute_activity_method(
+                    RepositoryActivities.integrate_patch,
+                    IntegratePatchInput(
+                        proposal_ref=proposal_ref,
+                        work_item=work_items[item_id],
+                        task_spec_ref=task_spec_ref,
+                    ),
+                    task_queue=REPOSITORY_TASK_QUEUE,
+                    start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                )
+        await self._transition(workflow_input, RunStatus.VERIFYING)
+        candidate = await workflow.execute_activity_method(
+            RepositoryActivities.export_candidate,
+            task_spec_ref.run_id,
+            task_queue=REPOSITORY_TASK_QUEUE,
+            start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+            retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+        )
+        self._final_revision = candidate.revision
+        candidate_dependency_key = dependency_layer_key
+        if dependency_manifest_paths(tuple(file.path for file in plan.planned_files)):
+            current_snapshot_ref = await workflow.execute_activity_method(
+                RepositoryActivities.scan_repository,
+                task_spec_ref,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            prepared = await workflow.execute_activity_method(
+                VerificationActivities.prepare_dependencies,
+                PrepareDependenciesInput(
+                    snapshot_ref=current_snapshot_ref,
+                    task_spec_ref=task_spec_ref,
+                ),
+                task_queue=SANDBOX_TASK_QUEUE,
+                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            candidate_dependency_key = prepared.dependency_layer_key
+        diff_ref = await workflow.execute_activity_method(
+            RepositoryActivities.build_final_diff,
+            task_spec_ref.run_id,
+            task_queue=REPOSITORY_TASK_QUEUE,
+            start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+            retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+        )
+        self._patch_ref = diff_ref
+        verification_result = await workflow.execute_activity_method(
+            VerificationActivities.verify_candidate,
+            VerifyCandidateInput(
+                snapshot_ref=snapshot_ref,
+                baseline_report_ref=baseline_report_ref,
+                test_plan_ref=test_plan_ref,
+                candidate_source_ref=candidate.source_archive_ref,
+                candidate_revision=candidate.revision,
+                dependency_layer_key=candidate_dependency_key,
+            ),
+            task_queue=SANDBOX_TASK_QUEUE,
+            start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+            retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+        )
+        self._verification_ref = verification_result.report_ref
+        if not verification_result.passed:
+            return CandidateAttemptResult(
+                verification_passed=False,
+                review_decision=None,
+                feedback_ref=verification_result.report_ref,
+            )
+        await self._transition(workflow_input, RunStatus.REVIEWING)
+        review_result = await workflow.execute_activity_method(
+            ReviewerActivities.review_candidate,
+            ReviewCandidateInput(
+                task_spec_ref=task_spec_ref,
+                diff_ref=diff_ref,
+                verification_ref=verification_result.report_ref,
+                attempt=self._repair_rounds + 1,
+            ),
+            task_queue=MODEL_TASK_QUEUE,
+            schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+            start_to_close_timeout=_MODEL_START_TO_CLOSE,
+            retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+        )
+        self._review_ref = review_result.review_ref
+        return CandidateAttemptResult(
+            verification_passed=True,
+            review_decision=review_result.decision,
+            feedback_ref=review_result.review_ref,
+        )
+
     @workflow.query
     def get_status(self) -> RunStatus:
         return self._status
+
+    @workflow.query
+    def get_repair_rounds(self) -> int:
+        return self._repair_rounds
 
     @workflow.update
     async def submit_approval(self, request: ApprovalRequest) -> None:
@@ -485,7 +602,7 @@ class CodeRepairWorkflow:
     ) -> ApprovalRequest:
         await self._transition(workflow_input, status)
         await workflow.wait_condition(lambda: kind in self._approvals)
-        return self._approvals[kind]
+        return self._approvals.pop(kind)
 
     async def _transition(
         self, workflow_input: CodeRepairWorkflowInput, new_status: RunStatus

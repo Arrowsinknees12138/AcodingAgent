@@ -38,6 +38,12 @@ _FORWARD_EDGES: frozenset[tuple[RunStatus, RunStatus]] = frozenset(
         (RunStatus.EXECUTING, RunStatus.VERIFYING),
         (RunStatus.EXECUTING, RunStatus.REPLANNING),
         (RunStatus.REPLANNING, RunStatus.PLANNING),
+        (RunStatus.VERIFYING, RunStatus.REPLANNING),
+        (RunStatus.REVIEWING, RunStatus.REPLANNING),
+        (RunStatus.PLANNING, RunStatus.EXECUTING),  # repair plan reuses sealed QA
+        (RunStatus.WAITING_PLAN_APPROVAL, RunStatus.EXECUTING),
+        (RunStatus.PLANNING, RunStatus.WAITING_EXECUTION_APPROVAL),
+        (RunStatus.WAITING_PLAN_APPROVAL, RunStatus.WAITING_EXECUTION_APPROVAL),
         (RunStatus.VERIFYING, RunStatus.REVIEWING),
         (RunStatus.VERIFYING, RunStatus.EXECUTING),  # 验证失败触发的 repair round
         (RunStatus.REVIEWING, RunStatus.WAITING_DELIVERY_APPROVAL),

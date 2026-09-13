@@ -94,6 +94,8 @@ def _work_item_ref(
 class FakePipelineActivities:
     def __init__(self) -> None:
         self._last_integrated_ref: ArtifactRef | None = None
+        self._verification_attempts: dict[UUID, int] = {}
+        self._dependency_prepares: dict[UUID, int] = {}
 
     @activity.defn(name="ingest_task")
     async def ingest_task(self, request_ref: ArtifactRef) -> IngestResult:
@@ -129,8 +131,10 @@ class FakePipelineActivities:
     async def prepare_dependencies(
         self, payload: PrepareDependenciesInput
     ) -> PrepareDependenciesResult:
-        del payload
-        return PrepareDependenciesResult(dependency_layer_key="a" * 64)
+        run_id = payload.snapshot_ref.run_id
+        count = self._dependency_prepares.get(run_id, 0) + 1
+        self._dependency_prepares[run_id] = count
+        return PrepareDependenciesResult(dependency_layer_key=("b" if count > 1 else "a") * 64)
 
     @activity.defn(name="verify_baseline")
     async def verify_baseline(self, payload: VerifyBaselineInput) -> ArtifactRef:
@@ -150,13 +154,14 @@ class FakePipelineActivities:
 
     @activity.defn(name="plan_change")
     async def plan_change(self, payload: PlanChangeInput) -> PlanChangeResult:
+        path = "pyproject.toml" if payload.task_spec_ref.size_bytes == 7 else "src/app.py"
         work_item = WorkItem(
             work_item_id=uuid4(),
             run_id=payload.task_spec_ref.run_id,
             kind="code",
             dependencies=(),
-            allowed_write_paths=("src/app.py",),
-            read_paths=("src/app.py",),
+            allowed_write_paths=(path,),
+            read_paths=(path,),
             owner="developer-1",
             attempt=1,
         )
@@ -166,7 +171,7 @@ class FakePipelineActivities:
             planned_files=(
                 PlannedFileChange(
                     work_item_id=work_item.work_item_id,
-                    path="src/app.py",
+                    path=path,
                     operation="modify",
                     owner="developer-1",
                     responsibility="implement task",
@@ -211,9 +216,17 @@ class FakePipelineActivities:
 
     @activity.defn(name="verify_candidate")
     async def verify_candidate(self, payload: VerifyCandidateInput) -> VerifyCandidateResult:
+        run_id = payload.candidate_source_ref.run_id
+        attempt = self._verification_attempts.get(run_id, 0) + 1
+        self._verification_attempts[run_id] = attempt
         return VerifyCandidateResult(
             report_ref=_derived_ref(payload.candidate_source_ref, ArtifactKind.VERIFICATION_REPORT),
-            passed=payload.candidate_source_ref.size_bytes != 2,
+            passed=payload.candidate_source_ref.size_bytes != 2
+            and (payload.candidate_source_ref.size_bytes != 5 or attempt > 1)
+            and (
+                payload.candidate_source_ref.size_bytes != 7
+                or payload.dependency_layer_key == "b" * 64
+            ),
         )
 
     @activity.defn(name="build_final_diff")
@@ -224,7 +237,9 @@ class FakePipelineActivities:
 
     @activity.defn(name="review_candidate")
     async def review_candidate(self, payload: ReviewCandidateInput) -> ReviewCandidateResult:
-        blocked = payload.diff_ref.size_bytes == 3
+        blocked = payload.diff_ref.size_bytes == 3 or (
+            payload.diff_ref.size_bytes == 6 and payload.attempt == 1
+        )
         return ReviewCandidateResult(
             review_ref=_derived_ref(payload.diff_ref, ArtifactKind.REVIEW_DECISION),
             decision="request_changes" if blocked else "approve",
