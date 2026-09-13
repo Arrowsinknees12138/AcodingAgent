@@ -96,7 +96,9 @@ class DockerSandboxService:
         plan = plan_dependency_install(source, policy)
         key = hashlib.sha256(
             json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()
-            + source_archive_ref.sha256.encode()
+            # With no manifest there is no repository dependency to install.
+            # Archive hashes include tar/gzip metadata and would defeat reuse.
+            + (source_archive_ref.sha256.encode() if plan.manager != "none" else b"")
             + _SANDBOX_PYTEST_REQUIREMENT.encode()
         ).hexdigest()
         layer_dir = self._dependency_layers_dir / key

@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 from temporalio.exceptions import ApplicationError
 
-from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput
+from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput, _build_patch
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, ArtifactRef
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.plans import (
@@ -34,6 +34,24 @@ def _archive(files: dict[str, bytes]) -> bytes:
             info.size = len(content)
             archive.addfile(info, io.BytesIO(content))
     return buffer.getvalue()
+
+
+def test_generated_patch_normalizes_crlf_checkout() -> None:
+    patch = _build_patch(
+        DeveloperPatchDesign(
+            edits=(
+                DeveloperFileEdit(
+                    path="calc.py",
+                    operation="modify",
+                    content="def add(a, b):\n    return a + b\n",
+                ),
+            ),
+            rationale="fix addition",
+        ),
+        {"calc.py": "def add(a, b):\r\n    return a - b\r\n"},
+    )
+    assert b"\r" not in patch
+    assert b"-    return a - b\n" in patch
 
 
 async def _task_ref(

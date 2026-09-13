@@ -332,6 +332,10 @@ def _build_patch(design: DeveloperPatchDesign, source_files: dict[str, str | Non
 
 
 def _patch_lines(content: str) -> list[str]:
+    # Git's unified patch format uses LF even when a checkout/archive contains
+    # CRLF. Mixing CRLF removed lines with LF added lines makes git apply reject
+    # an otherwise valid edit on Windows.
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
     if content and not content.endswith("\n"):
         content += "\n"
     return content.splitlines(keepends=True)
