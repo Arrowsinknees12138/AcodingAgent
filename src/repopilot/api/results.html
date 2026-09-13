@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>RepoPilot 运行结果</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #17202c; background: #f5f7fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { background: #172c4d; color: white; padding: 22px max(24px, calc((100vw - 1300px) / 2)); }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    h2 { font-size: 17px; margin: 0 0 16px; }
+    p { margin: 0; line-height: 1.5; }
+    .muted { color: #66758a; font-size: 13px; }
+    header .muted { color: #cbd7e8; }
+    main { max-width: 1348px; margin: auto; padding: 24px; }
+    .toolbar, .layout, .summary { display: grid; gap: 16px; }
+    .toolbar { grid-template-columns: minmax(210px, 1fr) auto minmax(290px, 1fr) auto; align-items: end; margin-bottom: 16px; }
+    .layout { grid-template-columns: 280px minmax(0, 1fr); align-items: start; }
+    .panel { background: white; border: 1px solid #dce3ed; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px #18314a0a; }
+    .panel + .panel { margin-top: 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #b8c5d5; border-radius: 6px; font: inherit; }
+    button { padding: 10px 14px; border: 0; border-radius: 6px; background: #225ba4; color: white; font: inherit; cursor: pointer; }
+    button:hover { background: #174880; }
+    button:disabled { opacity: .55; cursor: default; }
+    button.secondary { background: #e9eef6; color: #193455; }
+    button.secondary:hover { background: #dbe5f1; }
+    .run-button { width: 100%; text-align: left; margin-top: 8px; background: #f2f5fa; color: #172c4d; border: 1px solid #dce3ed; overflow-wrap: anywhere; }
+    .run-button:hover, .run-button.active { background: #e0ecfc; border-color: #8cafd9; }
+    .run-button small { display: block; color: #66758a; margin-top: 3px; }
+    .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .summary div { min-width: 0; }
+    .summary strong { display: block; font-size: 17px; margin-top: 4px; overflow-wrap: anywhere; }
+    .status { display: inline-block; border-radius: 99px; padding: 3px 8px; background: #e9eef6; font-size: 12px; font-weight: 700; }
+    .status.succeeded { color: #126041; background: #d9f5e8; }
+    .status.failed, .status.cancelled { color: #a52828; background: #ffe5e5; }
+    .status.waiting { color: #855600; background: #fff0c7; }
+    .entry { border-top: 1px solid #e8edf4; padding: 12px 0; }
+    .entry:first-child { border-top: 0; padding-top: 0; }
+    .entry-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .entry-head strong { overflow-wrap: anywhere; }
+    .entry-head time { white-space: nowrap; color: #66758a; font-size: 12px; }
+    details { border-top: 1px solid #e8edf4; padding: 12px 0; }
+    details:first-child { border-top: 0; padding-top: 0; }
+    summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f6fa; padding: 12px; border-radius: 6px; max-height: 480px; overflow-y: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; }
+    .actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+    .notice { margin-bottom: 16px; padding: 11px 14px; border-radius: 6px; background: #e8f2ff; color: #234c7c; }
+    .notice.error { background: #ffe9e9; color: #8e2424; }
+    .empty { color: #66758a; font-size: 14px; }
+    .section-note { margin: -8px 0 12px; }
+    @media (max-width: 800px) { .toolbar { grid-template-columns: 1fr auto; } .layout { grid-template-columns: 1fr; } .summary { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 480px) { main { padding: 16px; } .summary { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>RepoPilot 运行结果</h1>
+    <p class="muted">只读查看运行状态、审计事件、Agent 输入与模型返回、最终产物。不会执行审批或修改任务。</p>
+  </header>
+  <main>
+    <div class="toolbar">
+      <div><label for="token">API Token</label><input id="token" type="password" autocomplete="off" placeholder="输入 REPOPILOT_API_TOKEN"></div>
+      <button id="connect">连接 / 刷新</button>
+      <div><label for="run-id">Run ID（可选，查找较早的任务）</label><input id="run-id" placeholder="UUID"></div>
+      <button id="open-run" class="secondary">查看 Run</button>
+    </div>
+    <div id="notice" class="notice" role="status">输入 API Token 后点击“连接 / 刷新”。Token 只保留在当前页面内存，不保存到浏览器存储。</div>
+    <div class="layout">
+      <aside class="panel">
+        <h2>最近的 Run</h2>
+        <p class="muted">最多显示 50 条已进入运行投影的任务。</p>
+        <div id="runs" class="empty">尚未连接。</div>
+      </aside>
+      <div>
+        <section class="panel"><h2>运行概览</h2><div id="overview" class="empty">请选择一个 Run。</div></section>
+        <section class="panel"><h2>最终结果与产物</h2><div id="results" class="empty">请选择一个 Run。</div></section>
+        <section class="panel"><h2>Agent 输入与模型返回</h2><p class="muted section-note">按产物创建时间排列；并行调用不保证输入与返回自动配对。点击条目查看原文。</p><div id="interactions" class="empty">请选择一个 Run。</div></section>
+        <section class="panel"><h2>审计事件</h2><div id="events" class="empty">请选择一个 Run。</div></section>
+      </div>
+    </div>
+  </main>
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    let apiToken = "";
+    let selectedRun = "";
+    let requestVersion = 0;
+
+    function node(tag, className, value) {
+      const item = document.createElement(tag);
+      if (className) item.className = className;
+      if (value !== undefined) item.textContent = String(value);
+      return item;
+    }
+
+    function notice(message, error = false) {
+      $("notice").textContent = message;
+      $("notice").classList.toggle("error", error);
+    }
+
+    function time(value) {
+      return value ? new Date(value).toLocaleString("zh-CN") : "—";
+    }
+
+    function status(value) {
+      const badge = node("span", "status", value || "未知");
+      if (value === "succeeded" || value === "failed" || value === "cancelled") badge.classList.add(value);
+      if (value && value.startsWith("waiting_")) badge.classList.add("waiting");
+      return badge;
+    }
+
+    async function api(path) {
+      if (!apiToken) throw new Error("请先输入 API Token 并连接。");
+      const response = await fetch(path, { headers: { Authorization: `Bearer ${apiToken}` }, cache: "no-store" });
+      if (!response.ok) {
+        let detail = "";
+        try { detail = (await response.json()).detail || ""; } catch (_) { /* no JSON body */ }
+        throw new Error(`请求失败 (${response.status})${detail ? `：${typeof detail === "string" ? detail : JSON.stringify(detail)}` : ""}`);
+      }
+      return response;
+    }
+
+    async function json(path) { return (await api(path)).json(); }
+
+    function artifactPath(artifact) { return `/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`; }
+
+    async function artifactBytes(artifact) { return (await api(artifactPath(artifact))).arrayBuffer(); }
+
+    function pretty(content) {
+      try {
+        const parsed = JSON.parse(content);
+        if (parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].message) {
+          const message = parsed.choices[0].message;
+          const body = typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2);
+          return `模型内容:\n${body || "(空)"}\n\n完整返回:\n${JSON.stringify(parsed, null, 2)}`;
+        }
+        return JSON.stringify(parsed, null, 2);
+      } catch (_) { return content; }
+    }
+
+    function artifactEntry(artifact) {
+      const details = node("details");
+      const heading = node("summary", "", `${artifact.kind} · ${time(artifact.created_at)} · ${artifact.size_bytes} B`);
+      const pre = node("pre", "", "正在读取…");
+      const actions = node("div", "actions");
+      const download = node("button", "secondary", "下载原始产物");
+      download.type = "button";
+      download.addEventListener("click", async (event) => {
+        event.preventDefault();
+        download.disabled = true;
+        try {
+          const bytes = await artifactBytes(artifact);
+          const url = URL.createObjectURL(new Blob([bytes]));
+          const link = node("a");
+          link.href = url;
+          link.download = `${artifact.kind}-${artifact.artifact_id}.bin`;
+          document.body.append(link);
+          link.click();
+          link.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (error) { notice(error.message, true); }
+        finally { download.disabled = false; }
+      });
+      actions.append(download);
+      details.append(heading, actions, pre);
+      let loaded = false;
+      details.addEventListener("toggle", async () => {
+        if (!details.open || loaded) return;
+        loaded = true;
+        if (artifact.kind === "source_archive" || artifact.kind === "test_bundle") {
+          pre.textContent = "二进制产物，请下载查看。";
+          return;
+        }
+        try {
+          const content = new TextDecoder("utf-8").decode(await artifactBytes(artifact));
+          pre.textContent = pretty(content);
+          if (artifact.kind === "trajectory") {
+            const lower = content.toLowerCase();
+            const role = lower.includes("candidate_diff") ? "Reviewer" : lower.includes("work_item") ? "Developer" : lower.includes("test_root") ? "QA" : lower.includes("task_spec") ? "Planner" : "Agent";
+            heading.textContent = `${role} 输入 · ${time(artifact.created_at)} · ${artifact.size_bytes} B`;
+          }
+        } catch (error) { pre.textContent = error.message; loaded = false; }
+      });
+      return details;
+    }
+
+    function renderRuns(runs) {
+      const container = $("runs");
+      container.replaceChildren();
+      if (!runs.length) { container.textContent = "暂无已投影的 Run。可直接输入 Run ID 查询。"; return; }
+      runs.forEach((run) => {
+        const button = node("button", "run-button", run.status);
+        button.type = "button";
+        button.append(node("small", "", run.run_id));
+        button.classList.toggle("active", run.run_id === selectedRun);
+        button.addEventListener("click", () => selectRun(run.run_id));
+        container.append(button);
+      });
+    }
+
+    function renderOverview(run) {
+      const container = $("overview");
+      container.replaceChildren();
+      const grid = node("div", "summary");
+      for (const [label, value] of [
+        ["状态", status(run.status)], ["模型调用", run.model_calls], ["计划版本", run.plan_version],
+        ["Run ID", run.run_id], ["基准提交", run.base_revision || "—"], ["Workflow ID", run.workflow_id],
+      ]) {
+        const cell = node("div");
+        cell.append(node("span", "muted", label));
+        const strong = node("strong");
+        strong.append(value instanceof Node ? value : document.createTextNode(String(value)));
+        cell.append(strong);
+        grid.append(cell);
+      }
+      container.append(grid);
+    }
+
+    function renderArtifacts(artifacts) {
+      const result = $("results");
+      const interactions = $("interactions");
+      result.replaceChildren();
+      interactions.replaceChildren();
+      const ordered = [...artifacts].sort((a, b) => a.created_at.localeCompare(b.created_at));
+      const agentKinds = new Set(["trajectory", "model_response"]);
+      const results = ordered.filter((item) => !agentKinds.has(item.kind));
+      const agents = ordered.filter((item) => agentKinds.has(item.kind));
+      if (!results.length) result.append(node("p", "empty", "暂无结果产物。"));
+      if (!agents.length) interactions.append(node("p", "empty", "暂无 Agent 交互产物。"));
+      results.filter((item) => item.kind === "final_report").forEach((item) => {
+        const entry = artifactEntry(item);
+        result.append(entry);
+        entry.open = true;
+      });
+      results.filter((item) => item.kind !== "final_report").forEach((item) => result.append(artifactEntry(item)));
+      agents.forEach((item) => interactions.append(artifactEntry(item)));
+    }
+
+    function renderEvents(events) {
+      const container = $("events");
+      container.replaceChildren();
+      if (!events.length) { container.textContent = "暂无审计事件。"; return; }
+      events.forEach((event) => {
+        const entry = node("div", "entry");
+        const head = node("div", "entry-head");
+        head.append(node("strong", "", event.event_type), node("time", "", time(event.created_at)));
+        entry.append(head, node("p", "muted", `${event.actor_type}${event.actor_id ? ` · ${event.actor_id}` : ""}`));
+        const details = node("details");
+        details.append(node("summary", "", "查看事件数据"), node("pre", "", JSON.stringify(event.payload, null, 2)));
+        entry.append(details);
+        container.append(entry);
+      });
+    }
+
+    async function selectRun(runId) {
+      const id = runId.trim();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        notice("请输入有效的 Run ID（UUID）。", true);
+        return;
+      }
+      const version = ++requestVersion;
+      selectedRun = id;
+      $("run-id").value = id;
+      for (const section of ["overview", "results", "interactions", "events"]) {
+        $(section).replaceChildren(node("p", "empty", "正在读取…"));
+      }
+      notice(`正在读取 Run ${id}…`);
+      try {
+        const [run, events, artifacts] = await Promise.all([
+          json(`/v1/runs/${encodeURIComponent(id)}`),
+          json(`/v1/runs/${encodeURIComponent(id)}/events`),
+          json(`/v1/runs/${encodeURIComponent(id)}/artifacts`),
+        ]);
+        if (version !== requestVersion) return;
+        renderOverview(run);
+        renderEvents(events);
+        renderArtifacts(artifacts);
+        document.querySelectorAll(".run-button").forEach((button) => button.classList.toggle("active", button.textContent.includes(id)));
+        notice(`已加载 Run ${id}；点击产物可查看详情或下载。`);
+      } catch (error) {
+        if (version !== requestVersion) return;
+        for (const section of ["overview", "results", "interactions", "events"]) {
+          $(section).replaceChildren(node("p", "empty", "读取失败，请检查 Run ID 或重试。"));
+        }
+        notice(error.message, true);
+      }
+    }
+
+    async function connect() {
+      const entered = $("token").value.trim();
+      if (entered) { apiToken = entered; $("token").value = ""; }
+      if (!apiToken) { notice("请输入 API Token。", true); return; }
+      $("connect").disabled = true;
+      notice("正在读取最近的 Run…");
+      try {
+        const runs = await json("/v1/runs?limit=50");
+        renderRuns(runs);
+        notice(`已连接，找到 ${runs.length} 个 Run。`);
+        if (selectedRun) await selectRun(selectedRun);
+      } catch (error) { notice(error.message, true); }
+      finally { $("connect").disabled = false; }
+    }
+
+    $("connect").addEventListener("click", connect);
+    $("open-run").addEventListener("click", () => selectRun($("run-id").value));
+    $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
+    $("run-id").addEventListener("keydown", (event) => { if (event.key === "Enter") selectRun(event.target.value); });
+  </script>
+</body>
+</html>

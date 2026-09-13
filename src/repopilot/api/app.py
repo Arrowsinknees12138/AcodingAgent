@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from repopilot.api.routes import artifacts, health, runs
 from repopilot.config import Settings, get_settings
@@ -66,6 +68,21 @@ def create_app(
     app.state.readiness_probe = readiness_probe or DatabaseReadinessProbe(get_session_factory())
     if run_control is not None:
         app.state.run_control = run_control
+
+    @app.get("/ui", include_in_schema=False)
+    async def results_page() -> FileResponse:
+        return FileResponse(
+            Path(__file__).with_name("results.html"),
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                    "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'"
+                ),
+            },
+        )
+
     app.include_router(health.router)
     app.include_router(runs.router)
     app.include_router(artifacts.router)

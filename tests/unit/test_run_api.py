@@ -39,6 +39,10 @@ class FakeRunControl:
             raise RunNotFoundError("missing")
         return self._view()
 
+    async def list_runs(self, limit: int = 50) -> tuple[RunView, ...]:
+        del limit
+        return (self._view(),)
+
     async def approve(self, run_id: UUID, approval: ApprovalRequest) -> None:
         if run_id != self.run_id:
             raise RunNotFoundError("missing")
@@ -150,6 +154,26 @@ def test_get_approve_and_cancel_run() -> None:
     cancellation = client.post(f"/v1/runs/{control.run_id}:cancel", headers=headers)
     assert cancellation.status_code == 202
     assert control.cancelled == [control.run_id]
+
+
+def test_list_runs_is_authenticated_and_bounded() -> None:
+    control = FakeRunControl()
+    client = _client(control)
+    assert client.get("/v1/runs").status_code == 401
+
+    response = client.get("/v1/runs?limit=50", headers={"Authorization": "Bearer test-token"})
+    assert response.status_code == 200
+    assert response.json()[0]["run_id"] == str(control.run_id)
+    too_many = client.get("/v1/runs?limit=101", headers={"Authorization": "Bearer test-token"})
+    assert too_many.status_code == 422
+
+
+def test_results_page_is_served_without_embedding_api_token() -> None:
+    response = _client(FakeRunControl()).get("/ui")
+    assert response.status_code == 200
+    assert "RepoPilot 运行结果" in response.text
+    assert "test-token" not in response.text
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_unknown_run_returns_404() -> None:
