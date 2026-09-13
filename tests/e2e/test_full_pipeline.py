@@ -23,6 +23,7 @@ from repopilot.activities.reviewer import ReviewerActivities
 from repopilot.activities.verification import VerificationActivities
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata
 from repopilot.domain.enums import ArtifactKind, RunStatus
+from repopilot.domain.errors import ErrorCode
 from repopilot.domain.plans import (
     ChangePlan,
     DeveloperFileEdit,
@@ -74,12 +75,16 @@ class LocalOriginRepository(GitRepositoryService):
         return await super()._ensure_bare_mirror(str(self._origin_path))
 
 
-@pytest.mark.parametrize("requires_repair", [False, True])
-async def test_one_file_repair_reaches_real_final_report(
+@pytest.mark.parametrize(
+    ("requires_repair", "budget_exhausted"),
+    [(False, False), (True, False), (False, True)],
+)
+async def test_real_pipeline_success_repair_and_budget(
     tmp_path: Path,
     artifact_store,
     db_engine,  # type: ignore[no-untyped-def]
     requires_repair: bool,
+    budget_exhausted: bool,
 ) -> None:
     origin = tmp_path / "origin"
     origin.mkdir()
@@ -224,7 +229,7 @@ async def test_one_file_repair_reaches_real_final_report(
         budget=BudgetInput(
             max_cost_usd=Decimal("1"),
             max_wall_time_seconds=1800,
-            max_model_calls=10,
+            max_model_calls=2 if budget_exhausted else 10,
             max_sandbox_seconds=1800,
         ),
     )
@@ -236,7 +241,10 @@ async def test_one_file_repair_reaches_real_final_report(
         ),
     )
     await budget.create_budget(
-        run_id=run_id, tenant_id=tenant_id, max_cost_usd=Decimal("1"), max_model_calls=10
+        run_id=run_id,
+        tenant_id=tenant_id,
+        max_cost_usd=Decimal("1"),
+        max_model_calls=2 if budget_exhausted else 10,
     )
     repository_activities = RepositoryActivities(
         artifact_store=artifact_store, repository=repository
@@ -302,7 +310,7 @@ async def test_one_file_repair_reaches_real_final_report(
             with env.auto_time_skipping_disabled():
                 result = await handle.result()
 
-    assert result.status is RunStatus.SUCCEEDED
+    assert result.status is (RunStatus.FAILED if budget_exhausted else RunStatus.SUCCEEDED)
     assert result.final_report_ref is not None
     report = FinalReport.model_validate_json(
         await artifact_store.get_bytes(
@@ -311,6 +319,13 @@ async def test_one_file_repair_reaches_real_final_report(
         )
     )
     assert report.base_revision == base_revision
+    if budget_exhausted:
+        assert result.failure is not None
+        assert result.failure.code is ErrorCode.BUDGET_EXCEEDED
+        assert report.model_calls == 2
+        assert report.patch_ref is None
+        assert report.cleanup_report_ref is not None
+        return
     assert report.changed_paths == ("calc.py",)
     assert report.model_calls == (6 if requires_repair else 4)
     assert report.repair_rounds == (1 if requires_repair else 0)

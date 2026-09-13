@@ -17,6 +17,7 @@ from uuid import UUID
 import temporalio.exceptions
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError, ApplicationError
 
 from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput
 from repopilot.activities.finalization import BuildFinalReportInput, FinalizationActivities
@@ -398,11 +399,33 @@ class CodeRepairWorkflow:
             return await self._finalize(
                 workflow_input,
                 RunStatus.FAILED,
-                error=self._error(
-                    ErrorCode.PLATFORM_ERROR,
-                    f"workflow stage failed: {type(exc).__name__}",
-                ),
+                error=self._stage_error(exc),
             )
+
+    @staticmethod
+    def _stage_error(exc: Exception) -> ErrorInfo:
+        # Only explicit, trusted Activity error types are surfaced. Arbitrary
+        # exception messages may contain repository content or credentials.
+        if isinstance(exc, ActivityError) and isinstance(exc.cause, ApplicationError):
+            known = {
+                "BUDGET_EXCEEDED": ErrorCode.BUDGET_EXCEEDED,
+                "MODEL_COMPLETION_UNKNOWN": ErrorCode.MODEL_COMPLETION_UNKNOWN,
+                "POLICY_DENIED": ErrorCode.POLICY_DENIED,
+            }
+            code = known.get(exc.cause.type or "")
+            if code is not None:
+                return ErrorInfo(
+                    code=code,
+                    message=f"workflow stage failed: {code.value}",
+                    retryable=False,
+                    source="workflow",
+                )
+        return ErrorInfo(
+            code=ErrorCode.PLATFORM_ERROR,
+            message=f"workflow stage failed: {type(exc).__name__}",
+            retryable=False,
+            source="workflow",
+        )
 
     async def _run_candidate_attempt(
         self,
