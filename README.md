@@ -4,6 +4,7 @@
 
 - 生产级系统设计（为什么做、最终形态）：[PRODUCTION_SYSTEM_DESIGN_DEMO.md](./PRODUCTION_SYSTEM_DESIGN_DEMO.md)
 - Phase 0 实施设计（本仓库严格遵循的代码结构 / 接口 / 状态机）：[PHASE0_IMPLEMENTATION_DESIGN.md](./PHASE0_IMPLEMENTATION_DESIGN.md)
+- 中文使用手册（安装、运行、审批、查看报告）：[USER_MANUAL.md](./USER_MANUAL.md)
 
 本仓库的代码组织、依赖方向、Temporal Workflow 状态机、Tool ACL、Sandbox
 安全约束等都以《Phase 0 实施设计》为唯一权威来源；如果代码与文档冲突，
