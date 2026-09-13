@@ -183,3 +183,65 @@ async def test_provider_supports_json_object_compatibility_mode() -> None:
     first_message = messages[0]
     assert isinstance(first_message, dict)
     assert "JSON Schema" in str(first_message["content"])
+
+
+async def test_provider_serializes_object_content_without_changing_other_content() -> None:
+    store = MemoryArtifactStore()
+    object_content = {"task": "修复加法", "constraints": {"new_dependencies": False}}
+    content_parts = [{"type": "text", "text": "keep this content-part array"}]
+    messages_ref = await store.put_bytes(
+        ArtifactKind.TRAJECTORY,
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": object_content},
+                    {"role": "user", "content": "plain text"},
+                    {"role": "user", "content": content_parts},
+                ]
+            },
+            ensure_ascii=False,
+        ).encode(),
+        ArtifactMetadata(
+            tenant_id=uuid4(),
+            run_id=uuid4(),
+            base_revision="a" * 40,
+            schema_version="1",
+        ),
+    )
+    seen_payload: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payload.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"names":[]}'}}], "usage": {}},
+        )
+
+    provider = OpenAICompatibleProvider(
+        base_url="https://models.example/v1",
+        api_key="secret",
+        artifact_store=store,
+        structured_output_mode="json_object",
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    await provider.generate(
+        ModelRequest(
+            logical_call_key="b" * 64,
+            model="test-model",
+            system_prompt="system",
+            messages_ref=messages_ref,
+            tool_schema_ref=None,
+            temperature=0,
+            top_p=1,
+            max_output_tokens=100,
+        ),
+        _StructuredOutput,
+    )
+
+    sent_messages = seen_payload["messages"]
+    assert isinstance(sent_messages, list)
+    sent_content = [message["content"] for message in sent_messages[1:]]
+    assert isinstance(sent_content[0], str)
+    assert json.loads(sent_content[0]) == object_content
+    assert sent_content[1] == "plain text"
+    assert sent_content[2] == content_parts

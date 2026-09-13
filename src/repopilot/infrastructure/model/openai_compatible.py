@@ -151,7 +151,15 @@ class OpenAICompatibleProvider:
             raise ModelProviderError("messages Artifact 不是合法 JSON") from exc
         if not isinstance(messages, list) or not all(isinstance(item, dict) for item in messages):
             raise ModelProviderError("messages Artifact 必须包含 JSON message 数组")
-        return messages
+        normalized_messages: list[dict[str, object]] = []
+        for message in messages:
+            normalized = message.copy()
+            if isinstance(normalized.get("content"), dict):
+                normalized["content"] = json.dumps(
+                    normalized["content"], ensure_ascii=False, sort_keys=True
+                )
+            normalized_messages.append(normalized)
+        return normalized_messages
 
     async def _post_with_retry(self, payload: dict[str, object]) -> dict[str, object]:
         headers = {"Authorization": f"Bearer {self._api_key}"}
