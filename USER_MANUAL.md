@@ -74,13 +74,16 @@ $body = @{
     risk_level = 'low'
 } | ConvertTo-Json -Depth 10
 
+$bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
 $run = Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/v1/runs' `
-    -Headers $createHeaders -ContentType 'application/json' -Body $body
+    -Headers $createHeaders -ContentType 'application/json; charset=utf-8' -Body $bodyBytes
 $runId = $run.run_id
 $run
 ```
 
 `Idempotency-Key` 必须是 UUID。同一个键重复发送**相同请求**会复用 Run；键相同而请求内容不同会返回 `409`。网络超时后重试时，请保留原键，不要立即生成新键。`revision` 建议填确定的 commit SHA 以便复现；不填时解析仓库当前 HEAD。
+
+PowerShell 中发送包含中文的 JSON 时，要按上例显式转换成 UTF-8 字节；否则某些环境会把中文替换成 `?`，任务与验收条件会在创建时就损坏。可以下载 `create_run_request` Artifact 核对服务器收到的原文。
 
 预算字段分别声明费用、墙钟时间、模型调用次数和沙箱时间的上限。当前模型费用预留/结算及调用次数上限已接入；实际费用估算依赖上文填写的 token 单价，单价保留 `0` 时不能把费用预算当成真实账单上限。`max_wall_time_seconds` 和 `max_sandbox_seconds` 目前只做请求校验，**尚未作为跨阶段全局截止/累计用量闸口执行**。最终报告也尚未跨 Activity 精确计量沙箱秒数（会附 warning）；不要把 `sandbox_seconds: 0` 理解为实际未使用沙箱。请通过外部监控限制长时间运行的任务。
 
