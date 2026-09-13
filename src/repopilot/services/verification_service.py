@@ -458,9 +458,19 @@ class CandidateVerificationService:
             for result, summary in zip(results, summaries, strict=True)
             for finding in self._build_findings(result, summary, baseline_failures)
         )
-        passed = all(
-            result.exit_code == 0 and not result.timed_out and not result.oom_killed
-            for result in results
+        passed = not regressions and all(
+            not result.timed_out
+            and not result.oom_killed
+            and (
+                result.exit_code == 0
+                or (
+                    result.exit_code == 1
+                    and bool(summary.failed_test_ids)
+                    and len(summary.failed_test_ids) == summary.failed
+                    and set(summary.failed_test_ids) <= baseline_failures
+                )
+            )
+            for result, summary in zip(results, summaries, strict=True)
         )
         combined_log_ref = await self._combine_logs(results, caller, candidate_source_ref)
         report = VerificationReport(
@@ -581,7 +591,7 @@ class CandidateVerificationService:
                 VerificationFinding(
                     finding_id=uuid4(),
                     file_path=test_id.split("::", 1)[0],
-                    severity="blocker",
+                    severity="blocker" if is_regression else "minor",
                     category="regression" if is_regression else "test",
                     message=(
                         f"候选新增失败测试: {test_id}"

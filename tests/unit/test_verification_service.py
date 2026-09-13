@@ -259,6 +259,7 @@ async def test_candidate_verification_reports_only_new_failures_as_regressions()
     assert report.regression_test_ids == ("tests/test_new.py::test_regression",)
     assert report.regression_count == 1
     assert {finding.category for finding in report.findings} == {"test", "regression"}
+    assert {finding.severity for finding in report.findings} == {"minor", "blocker"}
     assert len(sandbox.commands) == 2
     assert sandbox.commands[1].args == ("-m", "pytest", "-q", ".repopilot/sealed_tests")
     assert sandbox.spec.network_enabled is False

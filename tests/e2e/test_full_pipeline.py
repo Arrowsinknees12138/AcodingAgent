@@ -76,8 +76,8 @@ class LocalOriginRepository(GitRepositoryService):
 
 
 @pytest.mark.parametrize(
-    ("requires_repair", "budget_exhausted"),
-    [(False, False), (True, False), (False, True)],
+    ("requires_repair", "budget_exhausted", "preexisting_failure"),
+    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
 )
 async def test_real_pipeline_success_repair_and_budget(
     tmp_path: Path,
@@ -85,6 +85,7 @@ async def test_real_pipeline_success_repair_and_budget(
     db_engine,  # type: ignore[no-untyped-def]
     requires_repair: bool,
     budget_exhausted: bool,
+    preexisting_failure: bool,
 ) -> None:
     origin = tmp_path / "origin"
     origin.mkdir()
@@ -96,6 +97,10 @@ async def test_real_pipeline_success_repair_and_budget(
         "from calc import add\n\ndef test_api_exists():\n    assert callable(add)\n",
         encoding="utf-8",
     )
+    if preexisting_failure:
+        (tests_dir / "test_existing_failure.py").write_text(
+            "def test_known_problem():\n    assert False\n", encoding="utf-8"
+        )
     run_git(["add", "-A"], origin)
     run_git(["commit", "-m", "base"], origin)
     base_revision = run_git(["rev-parse", "HEAD"], origin).strip()
@@ -339,7 +344,10 @@ async def test_real_pipeline_success_repair_and_budget(
         await artifact_store.get_bytes(report.verification_ref, caller)
     )
     assert verification_report.passed
-    assert verification_report.candidate_summary.failed == 0
+    assert verification_report.candidate_summary.failed == (1 if preexisting_failure else 0)
     assert verification_report.candidate_summary.passed >= 2
+    assert verification_report.regression_count == 0
+    if preexisting_failure:
+        assert any(finding.severity == "minor" for finding in verification_report.findings)
     assert report.review_ref is not None
     assert report.cleanup_report_ref is not None
