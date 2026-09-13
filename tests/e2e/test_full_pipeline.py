@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
@@ -35,6 +36,7 @@ from repopilot.domain.verification import (
     SealedTestDesign,
     SealedTestFile,
     TestCaseSpec,
+    VerificationReport,
 )
 from repopilot.infrastructure.db.model_budget import PostgresModelBudgetStore
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
@@ -72,10 +74,12 @@ class LocalOriginRepository(GitRepositoryService):
         return await super()._ensure_bare_mirror(str(self._origin_path))
 
 
+@pytest.mark.parametrize("requires_repair", [False, True])
 async def test_one_file_repair_reaches_real_final_report(
     tmp_path: Path,
     artifact_store,
     db_engine,  # type: ignore[no-untyped-def]
+    requires_repair: bool,
 ) -> None:
     origin = tmp_path / "origin"
     origin.mkdir()
@@ -105,63 +109,98 @@ async def test_one_file_repair_reaches_real_final_report(
         tenant_id=tenant_id,
     )
     budget = PostgresModelBudgetStore(sessions)
-    provider = FakeModelProvider(
-        [
-            ChangePlan(
-                plan_id=uuid4(),
-                version=1,
-                supersedes_plan_id=None,
-                files=(
-                    PlannedFileChange(
-                        work_item_id=item_id,
-                        path="calc.py",
-                        operation="modify",
-                        owner="developer-1",
-                        responsibility="fix addition",
-                        required_interfaces=(),
+    plan_id = uuid4()
+    outputs = [
+        ChangePlan(
+            plan_id=plan_id,
+            version=1,
+            supersedes_plan_id=None,
+            files=(
+                PlannedFileChange(
+                    work_item_id=item_id,
+                    path="calc.py",
+                    operation="modify",
+                    owner="developer-1",
+                    responsibility="fix addition",
+                    required_interfaces=(),
+                ),
+            ),
+            dependency_edges=(),
+            risk_flags=(),
+        ),
+        SealedTestDesign(
+            files=(
+                SealedTestFile(
+                    path=".repopilot/sealed_tests/test_acceptance.py",
+                    content=(
+                        "from calc import add\n\ndef test_adds_numbers():\n"
+                        "    assert add(1, 2) == 3\n"
                     ),
                 ),
-                dependency_edges=(),
-                risk_flags=(),
             ),
-            SealedTestDesign(
-                files=(
-                    SealedTestFile(
-                        path=".repopilot/sealed_tests/test_acceptance.py",
-                        content=(
-                            "from calc import add\n\ndef test_adds_numbers():\n"
-                            "    assert add(1, 2) == 3\n"
+            cases=(
+                TestCaseSpec(
+                    name="test_adds_numbers",
+                    purpose="acceptance",
+                    expected_on_base="fail",
+                ),
+            ),
+            acceptance_mapping=(
+                AcceptanceTestMapping(
+                    acceptance_criterion="add(1, 2) returns 3",
+                    test_names=("test_adds_numbers",),
+                ),
+            ),
+        ),
+        DeveloperPatchDesign(
+            edits=(
+                DeveloperFileEdit(
+                    path="calc.py",
+                    operation="modify",
+                    content=(
+                        "def add(a, b):\n    return a * b\n"
+                        if requires_repair
+                        else "def add(a, b):\n    return a + b\n"
+                    ),
+                ),
+            ),
+            rationale="fix arithmetic",
+        ),
+    ]
+    if requires_repair:
+        outputs.extend(
+            [
+                ChangePlan(
+                    plan_id=uuid4(),
+                    version=2,
+                    supersedes_plan_id=plan_id,
+                    files=(
+                        PlannedFileChange(
+                            work_item_id=uuid4(),
+                            path="calc.py",
+                            operation="modify",
+                            owner="developer-1",
+                            responsibility="correct failed acceptance test",
+                            required_interfaces=(),
                         ),
                     ),
+                    dependency_edges=(),
+                    risk_flags=(),
                 ),
-                cases=(
-                    TestCaseSpec(
-                        name="test_adds_numbers",
-                        purpose="acceptance",
-                        expected_on_base="fail",
+                DeveloperPatchDesign(
+                    edits=(
+                        DeveloperFileEdit(
+                            path="calc.py",
+                            operation="modify",
+                            content="def add(a, b):\n    return a + b\n",
+                        ),
                     ),
+                    rationale="repair failed acceptance test",
                 ),
-                acceptance_mapping=(
-                    AcceptanceTestMapping(
-                        acceptance_criterion="add(1, 2) returns 3",
-                        test_names=("test_adds_numbers",),
-                    ),
-                ),
-            ),
-            DeveloperPatchDesign(
-                edits=(
-                    DeveloperFileEdit(
-                        path="calc.py",
-                        operation="modify",
-                        content="def add(a, b):\n    return a + b\n",
-                    ),
-                ),
-                rationale="fix arithmetic",
-            ),
-            ReviewDecision(decision="approve", findings=(), rationale="all checks pass"),
-        ],
-        artifact_store,
-    )
+            ]
+        )
+    outputs.append(ReviewDecision(decision="approve", findings=(), rationale="all checks pass"))
+    provider = FakeModelProvider(outputs, artifact_store)
     gateway = BudgetedModelGateway(provider, budget)
     model_args = {
         "artifact_store": artifact_store,
@@ -273,7 +312,19 @@ async def test_one_file_repair_reaches_real_final_report(
     )
     assert report.base_revision == base_revision
     assert report.changed_paths == ("calc.py",)
-    assert report.model_calls == 4
+    assert report.model_calls == (6 if requires_repair else 4)
+    assert report.repair_rounds == (1 if requires_repair else 0)
+    assert report.patch_ref is not None
+    caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="e2e")
+    final_diff = (await artifact_store.get_bytes(report.patch_ref, caller)).decode()
+    assert "-    return a - b" in final_diff
+    assert "+    return a + b" in final_diff
     assert report.verification_ref is not None
+    verification_report = VerificationReport.model_validate_json(
+        await artifact_store.get_bytes(report.verification_ref, caller)
+    )
+    assert verification_report.passed
+    assert verification_report.candidate_summary.failed == 0
+    assert verification_report.candidate_summary.passed >= 2
     assert report.review_ref is not None
     assert report.cleanup_report_ref is not None

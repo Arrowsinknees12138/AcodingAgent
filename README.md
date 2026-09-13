@@ -54,7 +54,9 @@
       并发 4 个 Developer。各终态现会清理沙箱/工作区并生成 Cleanup/Final Report，
       包含 diff、验证、评审与模型费用引用。Verification/Reviewer 失败会在原批准
       路径内最多修复两轮，重规划按风险重新审批；授权的依赖清单变更会为候选
-      重新构建受控依赖层。待完成：真实仓库完整 E2E。
+      重新构建受控依赖层。真实本地 Git + PostgreSQL/MinIO + Docker + Temporal 的
+      Fake Model E2E 已覆盖单文件修复及验收失败后重规划修复，并核验最终 diff 和
+      测试结果；第 23.5 节其余场景仍待补齐。
 - [ ] Milestone 8：评测与交付
 
 控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载
@@ -144,6 +146,14 @@ nightly（`.github/workflows/nightly.yml`），不在每个 PR 都跑：
 
 ```bash
 uv run pytest tests/security
+```
+
+`tests/e2e` 使用 Fake Model，实际运行 Git、PostgreSQL/MinIO、Docker 沙箱和
+Temporal；首次运行需经受控代理从官方 PyPI 安装 pytest，之后复用本地依赖层：
+
+```bash
+docker compose up -d --wait pypi-proxy
+uv run pytest tests/e2e
 ```
 
 启动 orchestration Worker（连接 `docker compose up -d postgres temporal`

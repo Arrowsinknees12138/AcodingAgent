@@ -1,8 +1,8 @@
 # 夜间任务（实施设计第 24 节）：跟 PR 门禁分开，运行更慢/更重的验证，
 # 不阻塞日常开发。
 #
-# 全量 E2E 和 20 个任务的 Fake Model 评测要等 Milestone 7/8 对应的测试
-# 套件落地后再加进来；现在先只接入已经实现的 Docker 安全测试。
+# 当前运行 Docker 安全测试和已实现的 Fake Model E2E 场景；第 23.5 节
+# 剩余场景及 20 个任务的评测会随 Milestone 7/8 逐步加入。
 
 name: Nightly
 
@@ -27,3 +27,9 @@ jobs:
 
       - name: Docker security tests
         run: uv run pytest tests/security -v
+
+      - name: Start official PyPI allowlist proxy
+        run: docker compose up -d --wait pypi-proxy
+
+      - name: Real pipeline with Fake Model
+        run: uv run pytest tests/e2e -v
