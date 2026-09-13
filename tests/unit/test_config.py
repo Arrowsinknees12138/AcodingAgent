@@ -19,6 +19,24 @@ def test_sandbox_url_rejects_non_loopback() -> None:
         Settings(_env_file=None, sandbox_service_url="http://0.0.0.0:8091")  # type: ignore[call-arg]
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost.evil.example:8091",
+        "http://127.0.0.1.evil.example:8091",
+        "http://localhost@evil.example:8091",
+        "http://127.0.0.1:8091@evil.example",
+        "http://localhost:99999",
+        "http://localhost:8091/redirect",
+        "http://localhost:8091?target=evil",
+        "http://localhost:8091#fragment",
+    ],
+)
+def test_sandbox_url_rejects_prefix_and_authority_tricks(url: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, sandbox_service_url=url)  # type: ignore[call-arg]
+
+
 def test_safe_summary_excludes_secrets() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     summary = settings.safe_summary()

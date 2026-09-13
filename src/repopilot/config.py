@@ -15,6 +15,7 @@ from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import Field, SecretStr, field_validator
@@ -82,14 +83,23 @@ class Settings(BaseSettings):
     @classmethod
     def _sandbox_url_must_be_loopback(cls, value: str) -> str:
         """Sandbox RPC 只允许监听/访问 loopback 地址，防止内部 RPC 被外部访问。"""
-        if not (
-            value.startswith("http://127.0.0.1")
-            or value.startswith("http://localhost")
-            or value.startswith("https://127.0.0.1")
-            or value.startswith("https://localhost")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("REPOPILOT_SANDBOX_SERVICE_URL 格式非法") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or port is None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
         ):
             raise ValueError("REPOPILOT_SANDBOX_SERVICE_URL 必须是 loopback 地址")
-        return value
+        return value.rstrip("/")
 
     @field_validator("pypi_proxy_url")
     @classmethod
