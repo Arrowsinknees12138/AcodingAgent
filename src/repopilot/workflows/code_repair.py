@@ -414,6 +414,28 @@ class CodeRepairWorkflow:
                     error=self._error(ErrorCode.WORKFLOW_CANCELLED, "workflow cancelled"),
                 )
             )
+        except Exception as exc:
+            # Unexpected Activity failures must still pass through FINALIZING. Do not
+            # expose untrusted exception text (which may contain credentials) in the
+            # user-facing report; the activity history retains diagnostic detail.
+            if self._status is RunStatus.FINALIZING:
+                raise
+            if workflow.cancellation_reason() is not None:
+                return await asyncio.shield(
+                    self._finalize(
+                        workflow_input,
+                        RunStatus.CANCELLED,
+                        error=self._error(ErrorCode.WORKFLOW_CANCELLED, "workflow cancelled"),
+                    )
+                )
+            return await self._finalize(
+                workflow_input,
+                RunStatus.FAILED,
+                error=self._error(
+                    ErrorCode.PLATFORM_ERROR,
+                    f"workflow stage failed: {type(exc).__name__}",
+                ),
+            )
 
     @workflow.query
     def get_status(self) -> RunStatus:
@@ -493,7 +515,7 @@ class CodeRepairWorkflow:
                 retry_policy=_CLEANUP_RETRY_POLICY,
             )
         except Exception as exc:
-            warnings.append(f"sandbox cleanup failed: {exc}")
+            warnings.append(f"sandbox cleanup failed: {type(exc).__name__}")
         try:
             repository_cleanup_ref = await workflow.execute_activity_method(
                 RepositoryActivities.cleanup_repository,
@@ -503,10 +525,10 @@ class CodeRepairWorkflow:
                 retry_policy=_CLEANUP_RETRY_POLICY,
             )
         except Exception as exc:
-            warnings.append(f"repository cleanup failed: {exc}")
+            warnings.append(f"repository cleanup failed: {type(exc).__name__}")
 
-        if self._base_revision is None or not self._repository_url or self._started_at is None:
-            raise RuntimeError("cannot build final report before ingest metadata is available")
+        if self._base_revision is None:
+            warnings.append("ingest did not establish repository metadata")
         final_report_ref = await workflow.execute_activity_method(
             FinalizationActivities.build_final_report,
             BuildFinalReportInput(
@@ -514,7 +536,7 @@ class CodeRepairWorkflow:
                 tenant_id=workflow_input.tenant_id,
                 status=outcome,
                 repository_url=self._repository_url,
-                base_revision=self._base_revision,
+                base_revision=self._base_revision or "0" * 40,
                 final_revision=self._final_revision,
                 patch_ref=self._patch_ref,
                 verification_ref=self._verification_ref,
@@ -522,7 +544,7 @@ class CodeRepairWorkflow:
                 repository_cleanup_ref=repository_cleanup_ref,
                 sandbox_cleanup_ref=sandbox_cleanup_ref,
                 warnings=tuple(warnings),
-                started_at=self._started_at,
+                started_at=self._started_at or workflow.now(),
                 finished_at=workflow.now(),
                 repair_rounds=self._repair_rounds,
                 error=error,

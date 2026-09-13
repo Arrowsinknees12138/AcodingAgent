@@ -97,6 +97,8 @@ class FakePipelineActivities:
 
     @activity.defn(name="ingest_task")
     async def ingest_task(self, request_ref: ArtifactRef) -> IngestResult:
+        if request_ref.size_bytes == 4:
+            raise RuntimeError("synthetic ingest failure: secret must not be echoed")
         if request_ref.size_bytes == 0:
             return IngestResult(
                 repository_url="https://github.com/owner/repo",

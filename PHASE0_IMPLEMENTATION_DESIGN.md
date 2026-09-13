@@ -2051,6 +2051,8 @@ class FinalReport(StrictModel):
 发现 Worker 重启后遗留的容器，内容寻址依赖层保留作缓存。模型用量由该 Run
 的 PostgreSQL `model_calls` 汇总，UNKNOWN 状态在 warning 中明示；当前
 `sandbox_seconds` 尚无跨 Activity 计量，填 0 并在报告中提示未计量。
+意外 Activity 异常使用 `PLATFORM_ERROR` 进入 `FAILED` 并通过相同清理闸口；
+未完成 Ingest 时报告以全零 base revision 明示未知，不把内部异常文本回显给用户。
 
 报告必须区分：
 

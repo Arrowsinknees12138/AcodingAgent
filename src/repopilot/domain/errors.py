@@ -15,6 +15,7 @@ from repopilot.domain.artifacts import ArtifactRef
 
 
 class ErrorCode(str, Enum):
+    PLATFORM_ERROR = "PLATFORM_ERROR"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     REPOSITORY_NOT_FOUND = "REPOSITORY_NOT_FOUND"
     REVISION_NOT_FOUND = "REVISION_NOT_FOUND"

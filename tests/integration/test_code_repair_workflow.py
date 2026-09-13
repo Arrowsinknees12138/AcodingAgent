@@ -23,6 +23,7 @@ from repopilot.domain.enums import (
     RiskLevel,
     RunStatus,
 )
+from repopilot.domain.errors import ErrorCode
 from repopilot.domain.policies import ApprovalPolicy, ApprovalStagePolicy
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
 from repopilot.infrastructure.temporal.client import (
@@ -48,6 +49,7 @@ def _fake_create_request_ref(
     missing_acceptance_criteria: bool = False,
     candidate_should_fail: bool = False,
     reviewer_should_block: bool = False,
+    ingest_should_fail: bool = False,
 ) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
@@ -60,7 +62,11 @@ def _fake_create_request_ref(
         size_bytes=(
             0
             if missing_acceptance_criteria
-            else (2 if candidate_should_fail else (3 if reviewer_should_block else 1))
+            else (
+                4
+                if ingest_should_fail
+                else (2 if candidate_should_fail else (3 if reviewer_should_block else 1))
+            )
         ),
         base_revision=None,
         input_artifact_ids=(),
@@ -135,6 +141,28 @@ async def test_candidate_verification_failure_stops_before_review(
     assert result.status is RunStatus.FAILED
     assert result.final_report_ref is not None
     assert result.failure is not None
+
+
+async def test_ingest_failure_still_finalizes_without_exposing_exception_text(
+    temporal_client: Client,
+) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(ingest_should_fail=True),
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    result = await handle.result()
+    assert result.status is RunStatus.FAILED
+    assert result.final_report_ref is not None
+    assert result.failure is not None
+    assert result.failure.code is ErrorCode.PLATFORM_ERROR
+    assert "secret" not in result.failure.message
 
 
 async def test_reviewer_blocker_prevents_delivery(temporal_client: Client) -> None:
