@@ -1,0 +1,14 @@
+# Agent 升级实施记录
+
+按任务记录完成状态、验证与提交；未标为完成的项目不得当作已上线能力。
+
+| 优先级 | 任务 | 状态 | 验证/备注 |
+| --- | --- | --- | --- |
+| P0 | Developer 接入真正 AgentLoop | 已完成 | 新 API Run 使用多轮工具调用；旧 Run 仍走旧 Activity；单元 147/147、工作流集成 19/19（不含单独的重启用例）通过 |
+| P0 | Developer 全仓 search/read、受限 write | 已完成 | 对仓库快照全量搜索/读取；写入和删除仅限批准路径；测试命令在断网沙箱执行。Planner 漏报的目标文件仍须走 P1 Scope Expansion 才能修改 |
+| P0 | 本地 E2E benchmark + metrics | 待完成 | 固定用例、运行脚本、机器可读指标待完成 |
+| P1 | Planner Agent 化 | 待完成 | |
+| P1 | Scope Expansion 协议 | 待完成 | |
+| P1 | Investigator Agent | 待完成 | |
+| P1 | Shared Blackboard | 待完成 | |
+| P2 | Reviewer Agent 化 | 待完成 | |

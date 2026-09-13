@@ -150,6 +150,26 @@ async def test_run_completes_when_auto_approved(temporal_client: Client) -> None
     assert status == RunStatus.SUCCEEDED
 
 
+async def test_new_run_dispatches_developer_agent_activity(
+    temporal_client: Client, fake_pipeline: FakePipelineActivities
+) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(),
+        auto_approve_low_risk=True,
+        developer_agent_mode=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+    assert fake_pipeline.agent_development_calls[workflow_input.create_request_ref.run_id] == 1
+
+
 async def test_qa_revises_mismatched_sealed_tests_before_execution(
     temporal_client: Client, fake_pipeline: FakePipelineActivities
 ) -> None:

@@ -187,6 +187,13 @@ async def _run_model_worker() -> None:
         gateway=gateway,
         model=settings.model_name,
         reservation_usd=settings.model_reservation_usd,
+        sandbox_service=DockerSandboxService(
+            data_dir=settings.data_dir,
+            artifact_store=artifacts,
+            tenant_id=settings.local_tenant_id,
+            pypi_proxy_url=settings.pypi_proxy_url,
+            pypi_egress_network=settings.pypi_egress_network,
+        ),
     )
     reviewer = ReviewerActivities(
         artifact_store=artifacts,
@@ -201,6 +208,7 @@ async def _run_model_worker() -> None:
             planning.plan_change,
             qa.design_sealed_tests,
             developer.develop_patch,
+            developer.develop_patch_with_agent,
             reviewer.review_candidate,
         ],
     )

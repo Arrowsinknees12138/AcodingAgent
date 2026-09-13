@@ -86,6 +86,7 @@ class PostgresTemporalRunControl(RunControl):
             create_request_ref=request_ref,
             risk_level=request.risk_level,
             approval_policy=request.approval_policy,
+            developer_agent_mode=True,
         )
         try:
             await self._model_budget_initializer.create_budget(

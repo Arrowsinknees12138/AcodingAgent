@@ -22,7 +22,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from testcontainers.community.postgres import PostgresContainer
 
-from repopilot.activities.developer import DevelopPatchInput
+from repopilot.activities.developer import DevelopAgentPatchInput, DevelopPatchInput
 from repopilot.activities.finalization import BuildFinalReportInput
 from repopilot.activities.ingest import FinalizeTaskSpecInput
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
@@ -97,6 +97,7 @@ class FakePipelineActivities:
         self._verification_attempts: dict[UUID, int] = {}
         self._dependency_prepares: dict[UUID, int] = {}
         self.qa_attempts: dict[UUID, int] = {}
+        self.agent_development_calls: dict[UUID, int] = {}
 
     @activity.defn(name="ingest_task")
     async def ingest_task(self, request_ref: ArtifactRef) -> IngestResult:
@@ -212,6 +213,12 @@ class FakePipelineActivities:
 
     @activity.defn(name="develop_patch")
     async def develop_patch(self, payload: DevelopPatchInput) -> ArtifactRef:
+        return _derived_ref(payload.developer_context_ref, ArtifactKind.PATCH)
+
+    @activity.defn(name="develop_patch_with_agent")
+    async def develop_patch_with_agent(self, payload: DevelopAgentPatchInput) -> ArtifactRef:
+        run_id = payload.developer_context_ref.run_id
+        self.agent_development_calls[run_id] = self.agent_development_calls.get(run_id, 0) + 1
         return _derived_ref(payload.developer_context_ref, ArtifactKind.PATCH)
 
     @activity.defn(name="integrate_patch")
@@ -374,6 +381,7 @@ async def temporal_client(
                 fake_pipeline.plan_change,
                 fake_pipeline.design_sealed_tests,
                 fake_pipeline.develop_patch,
+                fake_pipeline.develop_patch_with_agent,
                 fake_pipeline.review_candidate,
             ],
         )

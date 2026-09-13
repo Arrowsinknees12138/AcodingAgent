@@ -32,6 +32,7 @@ class AgentExecutionResult(StrictModel):
     output_refs: tuple[ArtifactRef, ...]
     model_call_ids: tuple[UUID, ...]
     error: ErrorInfo | None
+    trajectory_ref: ArtifactRef | None = None
 
 
 class AgentTurn(StrictModel):

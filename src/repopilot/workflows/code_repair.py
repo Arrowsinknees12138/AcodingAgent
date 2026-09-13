@@ -19,7 +19,11 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
-from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput
+from repopilot.activities.developer import (
+    DevelopAgentPatchInput,
+    DeveloperActivities,
+    DevelopPatchInput,
+)
 from repopilot.activities.finalization import BuildFinalReportInput, FinalizationActivities
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult, PlanningActivities
@@ -77,6 +81,8 @@ class CodeRepairWorkflowInput(StrictModel):
     create_request_ref: ArtifactRef
     risk_level: RiskLevel = RiskLevel.LOW
     approval_policy: ApprovalPolicy = ApprovalPolicy()
+    # Old workflow histories keep the one-shot Developer Activity during replay.
+    developer_agent_mode: bool = False
     # Temporal 输入会保存在不可变 History 中；保留旧字段兼容已经启动的 Run。
     # 新调用方不应再传它。False 等价于额外要求 delivery 人工审批。
     auto_approve_low_risk: bool | None = None
@@ -462,6 +468,9 @@ class CodeRepairWorkflow:
         plan: PlanChangeResult,
         repair_feedback_ref: ArtifactRef | None,
     ) -> CandidateAttemptResult:
+        agent_mode = workflow_input.developer_agent_mode and workflow.patched(
+            "developer-agent-loop-v1"
+        )
         work_items = {item.work_item_id: item for item in plan.work_items}
         planned_files: dict[UUID, list[PlannedFileChange]] = {}
         for planned_file in plan.planned_files:
@@ -487,21 +496,40 @@ class CodeRepairWorkflow:
                     for item_id in wave
                 )
             )
-            proposals = await asyncio.gather(
-                *(
-                    workflow.execute_activity_method(
-                        DeveloperActivities.develop_patch,
-                        DevelopPatchInput(
+
+            async def develop(item_id: UUID, context_ref: ArtifactRef) -> ArtifactRef:
+                if agent_mode:
+                    return await workflow.execute_activity_method(
+                        DeveloperActivities.develop_patch_with_agent,
+                        DevelopAgentPatchInput(
                             developer_context_ref=context_ref,
                             task_spec_ref=task_spec_ref,
                             planned_files=tuple(planned_files[item_id]),
                             repair_feedback_ref=repair_feedback_ref,
+                            dependency_layer_key=dependency_layer_key,
                         ),
                         task_queue=MODEL_TASK_QUEUE,
                         schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
                         start_to_close_timeout=_MODEL_START_TO_CLOSE,
                         retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
                     )
+                return await workflow.execute_activity_method(
+                    DeveloperActivities.develop_patch,
+                    DevelopPatchInput(
+                        developer_context_ref=context_ref,
+                        task_spec_ref=task_spec_ref,
+                        planned_files=tuple(planned_files[item_id]),
+                        repair_feedback_ref=repair_feedback_ref,
+                    ),
+                    task_queue=MODEL_TASK_QUEUE,
+                    schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                    start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                    retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+                )
+
+            proposals = await asyncio.gather(
+                *(
+                    develop(item_id, context_ref)
                     for item_id, context_ref in zip(wave, contexts, strict=True)
                 )
             )

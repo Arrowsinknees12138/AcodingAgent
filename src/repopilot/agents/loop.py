@@ -66,7 +66,7 @@ class AgentLoop:
         self._validate_context(request, tool_context)
         self._tools.validate_requested_tools(request.role, request.allowed_tools)
         messages = await self._load_inputs(request)
-        prompt = _load_prompt(request.role)
+        prompt = _load_prompt(request.role, request.prompt_version)
         call_limit = min(
             request.remaining_model_calls,
             _ROLE_MODEL_CALL_LIMIT[request.role],
@@ -212,13 +212,14 @@ class AgentLoop:
                         ErrorCode.MODEL_OUTPUT_INVALID,
                         f"finish 结果无效: {exc}",
                     )
-                await self._save_trajectory(request, messages)
+                final_trajectory_ref = await self._save_trajectory(request, messages)
                 return AgentExecutionResult(
                     work_item_id=request.work_item_id,
                     status=finished.status,
                     output_refs=finished.output_refs,
                     model_call_ids=tuple(call_ids),
                     error=finished.error,
+                    trajectory_ref=final_trajectory_ref,
                 )
 
         return self._failed(
@@ -310,9 +311,11 @@ class AgentLoop:
         )
 
 
-def _load_prompt(role: AgentRole) -> str:
+def _load_prompt(role: AgentRole, version: str = "1") -> str:
+    if version != "1" and (role is not AgentRole.DEVELOPER or version != "2"):
+        raise ValueError(f"unsupported agent prompt version: {role.value}/{version}")
     return (
         files("repopilot.agents.prompts")
-        .joinpath(f"{role.value}_v1.md")
+        .joinpath(f"{role.value}_v{version}.md")
         .read_text(encoding="utf-8")
     )

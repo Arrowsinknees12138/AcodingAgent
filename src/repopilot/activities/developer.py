@@ -13,9 +13,11 @@ from uuid import uuid4
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from repopilot.agents.loop import AgentLoop
 from repopilot.domain import StrictModel
+from repopilot.domain.agents import AgentExecutionRequest
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, ArtifactRef
-from repopilot.domain.enums import ArtifactKind
+from repopilot.domain.enums import AgentRole, ArtifactKind
 from repopilot.domain.plans import (
     DeveloperContext,
     DeveloperPatchDesign,
@@ -37,7 +39,16 @@ from repopilot.services.model_gateway import (
     build_logical_call_key,
 )
 from repopilot.services.repair_feedback import summarize_repair_feedback
+from repopilot.services.sandbox_service import SandboxService
 from repopilot.services.scheduler import normalize_plan_path
+from repopilot.tools.archive_workspace import ArchiveWorkspaceBackend
+from repopilot.tools.delete_file import DeleteFileTool
+from repopilot.tools.finish import FinishTool
+from repopilot.tools.read_file import ReadFileTool
+from repopilot.tools.registry import ToolContext, ToolRegistry
+from repopilot.tools.run_command import RunCommandTool
+from repopilot.tools.search_code import SearchCodeTool
+from repopilot.tools.write_file import WriteFileTool
 
 _MAX_CONTEXT_FILE_BYTES = 1024 * 1024
 _MAX_CONTEXT_BYTES = 4 * 1024 * 1024
@@ -51,6 +62,10 @@ class DevelopPatchInput(StrictModel):
     repair_feedback_ref: ArtifactRef | None = None
 
 
+class DevelopAgentPatchInput(DevelopPatchInput):
+    dependency_layer_key: str | None = None
+
+
 class DeveloperActivities:
     def __init__(
         self,
@@ -59,11 +74,203 @@ class DeveloperActivities:
         gateway: BudgetedModelGateway,
         model: str,
         reservation_usd: Decimal,
+        sandbox_service: SandboxService | None = None,
     ) -> None:
         self._artifacts = artifact_store
         self._gateway = gateway
         self._model = model
         self._reservation_usd = reservation_usd
+        self._sandbox = sandbox_service
+
+    @activity.defn(name="develop_patch_with_agent")
+    async def develop_patch_with_agent(self, payload: DevelopAgentPatchInput) -> ArtifactRef:
+        if self._sandbox is None:
+            raise ApplicationError("Developer agent sandbox is unavailable", non_retryable=True)
+        context_ref = payload.developer_context_ref
+        task_ref = payload.task_spec_ref
+        if context_ref.run_id != task_ref.run_id or context_ref.tenant_id != task_ref.tenant_id:
+            raise ApplicationError("Developer input Artifact scope mismatch", non_retryable=True)
+        caller = ArtifactCaller(
+            tenant_id=context_ref.tenant_id,
+            run_id=context_ref.run_id,
+            role=None,
+            service="developer-agent-context",
+        )
+        context = DeveloperContext.model_validate_json(
+            await self._artifacts.get_bytes(context_ref, caller)
+        )
+        task = TaskSpec.model_validate_json(await self._artifacts.get_bytes(task_ref, caller))
+        planned = {normalize_plan_path(file.path): file.operation for file in payload.planned_files}
+        if any(
+            file.work_item_id != context.work_item.work_item_id for file in payload.planned_files
+        ):
+            raise ApplicationError("planned files do not belong to WorkItem", non_retryable=True)
+        if set(planned) != set(context.work_item.allowed_write_paths):
+            raise ApplicationError("planned files do not match write allowlist", non_retryable=True)
+        if (
+            dependency_manifest_paths(tuple(planned))
+            and not task.dependency_policy.allow_new_dependencies
+        ):
+            raise ApplicationError(
+                "task does not authorize dependency manifest changes",
+                type="POLICY_DENIED",
+                non_retryable=True,
+            )
+        source = await self._artifacts.get_bytes(context.source_archive_ref, caller)
+        try:
+            backend = ArchiveWorkspaceBackend(
+                archive=source,
+                run_id=context_ref.run_id,
+                tenant_id=context_ref.tenant_id,
+                base_revision=context.input_revision,
+                artifact_store=self._artifacts,
+                sandbox=self._sandbox,
+                dependency_layer_key=payload.dependency_layer_key,
+            )
+        except (ValueError, tarfile.TarError) as exc:
+            raise ApplicationError(
+                f"invalid developer workspace: {exc}", non_retryable=True
+            ) from exc
+        upstream_interfaces = [
+            json.loads(await self._artifacts.get_bytes(ref, caller))
+            for ref in context.upstream_interface_refs
+        ]
+        repair_feedback: dict[str, object] | None = None
+        if payload.repair_feedback_ref is not None:
+            feedback_ref = payload.repair_feedback_ref
+            if (
+                context.work_item.kind != "repair"
+                or feedback_ref.run_id != context_ref.run_id
+                or feedback_ref.tenant_id != context_ref.tenant_id
+            ):
+                raise ApplicationError(
+                    "Developer repair feedback scope mismatch", non_retryable=True
+                )
+            repair_feedback = summarize_repair_feedback(
+                feedback_ref.kind,
+                await self._artifacts.get_bytes(feedback_ref, caller),
+            )
+        seed_ref = await self._artifacts.put_bytes(
+            ArtifactKind.TRAJECTORY,
+            json.dumps(
+                {
+                    "task": task.model_dump(mode="json"),
+                    "work_item": context.work_item.model_dump(mode="json"),
+                    "planned_files": [
+                        file.model_dump(mode="json") for file in payload.planned_files
+                    ],
+                    "repository_paths": backend.paths,
+                    "upstream_interfaces": upstream_interfaces,
+                    "repair_feedback": repair_feedback,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode(),
+            ArtifactMetadata(
+                tenant_id=context_ref.tenant_id,
+                run_id=context_ref.run_id,
+                base_revision=context.input_revision,
+                schema_version="1",
+                input_artifact_ids=(
+                    context_ref.artifact_id,
+                    task_ref.artifact_id,
+                    context.source_archive_ref.artifact_id,
+                    *(ref.artifact_id for ref in context.upstream_interface_refs),
+                    *(
+                        (payload.repair_feedback_ref.artifact_id,)
+                        if payload.repair_feedback_ref
+                        else ()
+                    ),
+                ),
+            ),
+        )
+        tools = ToolRegistry(
+            (
+                SearchCodeTool(backend),
+                ReadFileTool(backend),
+                WriteFileTool(backend),
+                DeleteFileTool(backend),
+                RunCommandTool(backend),
+                FinishTool(),
+            )
+        )
+        loop = AgentLoop(
+            gateway=self._gateway,
+            artifact_store=self._artifacts,
+            tools=tools,
+            model=self._model,
+            reservation_usd=self._reservation_usd,
+        )
+        result = await loop.execute(
+            AgentExecutionRequest(
+                role=AgentRole.DEVELOPER,
+                work_item_id=context.work_item.work_item_id,
+                input_refs=(seed_ref,),
+                allowed_tools=(
+                    "search_code",
+                    "read_file",
+                    "write_file",
+                    "delete_file",
+                    "run_command",
+                    "finish",
+                ),
+                max_steps=10,
+                remaining_model_calls=10,
+                attempt=context.work_item.attempt,
+                prompt_version="2",
+            ),
+            ToolContext(
+                tenant_id=context_ref.tenant_id,
+                run_id=context_ref.run_id,
+                work_item_id=context.work_item.work_item_id,
+                sandbox_id=None,
+                read_paths=(),
+                write_paths=tuple(sorted(planned)),
+                read_all_repository_files=True,
+                command_sandbox_on_demand=True,
+            ),
+        )
+        if result.status != "succeeded":
+            message = result.error.message if result.error is not None else "agent did not finish"
+            raise ApplicationError(message, type="DEVELOPER_AGENT_FAILED", non_retryable=True)
+        try:
+            edits = backend.final_edits(tuple(planned))
+            if not edits:
+                raise ValueError("coding agent finished without an in-scope change")
+            for edit in edits:
+                if planned[edit.path] != edit.operation:
+                    raise ValueError(f"agent edit operation differs from ChangePlan: {edit.path}")
+            original = backend.original_text(tuple(edit.path for edit in edits))
+            patch = _build_patch(
+                DeveloperPatchDesign(edits=edits, rationale="AgentLoop workspace edits"), original
+            )
+        except (PermissionError, ValueError, UnicodeDecodeError) as exc:
+            raise ApplicationError(
+                str(exc), type="DEVELOPER_OUTPUT_INVALID", non_retryable=True
+            ) from exc
+        trace_ids = (result.trajectory_ref.artifact_id,) if result.trajectory_ref else ()
+        metadata = ArtifactMetadata(
+            tenant_id=context_ref.tenant_id,
+            run_id=context_ref.run_id,
+            base_revision=context.input_revision,
+            schema_version="1",
+            input_artifact_ids=(context_ref.artifact_id, task_ref.artifact_id, *trace_ids),
+        )
+        patch_ref = await self._artifacts.put_bytes(ArtifactKind.PATCH, patch, metadata)
+        proposal = PatchProposal(
+            work_item_id=context.work_item.work_item_id,
+            attempt=context.work_item.attempt,
+            input_revision=context.input_revision,
+            patch_ref=patch_ref,
+            touched_paths=tuple(edit.path for edit in edits),
+        )
+        return await self._artifacts.put_bytes(
+            ArtifactKind.PATCH,
+            proposal.model_dump_json().encode(),
+            metadata.model_copy(
+                update={"input_artifact_ids": (*metadata.input_artifact_ids, patch_ref.artifact_id)}
+            ),
+        )
 
     @activity.defn(name="develop_patch")
     async def develop_patch(self, payload: DevelopPatchInput) -> ArtifactRef:
