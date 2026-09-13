@@ -72,3 +72,7 @@ class RepositoryActivities:
     @activity.defn(name="build_final_diff")
     async def build_final_diff(self, run_id: UUID) -> ArtifactRef:
         return await self._repository.final_diff(run_id)
+
+    @activity.defn(name="cleanup_repository")
+    async def cleanup_repository(self, run_id: UUID) -> ArtifactRef:
+        return await self._repository.cleanup(run_id)

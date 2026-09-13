@@ -49,9 +49,10 @@
       QA Activity 也已能生成受限路径下的 sealed test bundle 和 TestPlan；Developer 会按 WorkItem
       精确读写范围生成补丁，Reviewer 严格执行 BLOCK/COMMENT 分类。待完成：交互式 sandbox RPC tool backend。
 - [ ] Milestone 7（进行中）：已实现 ChangePlan/WorkItem 跨对象校验、环检测、
-      路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner/QA/
-      Planner、QA、Developer、候选 Verification、Reviewer 均已接入主 Workflow，并按 DAG wave 最多
-      并发 4 个 Developer。待完成：Repair loop、最终清理/报告和真实仓库完整 E2E。
+      路径唯一 Owner 校验和最多 4 路的确定性 DAG 分批调度。Planner、QA、
+      Developer、候选 Verification、Reviewer 均已接入主 Workflow，并按 DAG wave 最多
+      并发 4 个 Developer。各终态现会清理沙箱/工作区并生成 Cleanup/Final Report，
+      包含 diff、验证、评审与模型费用引用。待完成：Repair loop、真实仓库完整 E2E。
 - [ ] Milestone 8：评测与交付
 
 控制面现已提供创建、查询、审批、取消、事件、Artifact 列表和 Artifact 下载

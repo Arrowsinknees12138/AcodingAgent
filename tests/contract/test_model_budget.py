@@ -85,6 +85,12 @@ async def test_reserve_settle_and_enforce_call_limit(db_engine) -> None:  # type
         ),
         response_ref=response_ref,
     )
+    usage = await store.get_run_usage(run_id=run_id, tenant_id=tenant_id)
+    assert usage.model_calls == 1
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+    assert usage.cost_usd == Decimal("0.01")
+    assert usage.unknown_calls == 0
 
     async with sessions() as session:
         budget = await session.get(RunBudget, run_id)

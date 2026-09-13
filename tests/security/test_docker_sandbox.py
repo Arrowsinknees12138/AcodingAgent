@@ -96,6 +96,38 @@ async def test_network_access_is_blocked(
     assert not result.timed_out  # 应该是立刻连接失败，不是等到超时
 
 
+async def test_cleanup_run_removes_lingering_runtime_sandbox(
+    sandbox_service: DockerSandboxService,
+    source_archive_ref: tuple,
+    artifact_store: MinioArtifactStore,
+    tmp_path: Path,
+) -> None:
+    run_id, ref = source_archive_ref
+    sandbox_id = await sandbox_service.create(
+        SandboxSpec(
+            run_id=run_id,
+            work_item_id=None,
+            image=SANDBOX_IMAGE,
+            source_archive_ref=ref,
+            test_bundle_ref=None,
+            network_enabled=False,
+            wall_time_seconds=30,
+        )
+    )
+
+    # A new worker has no in-memory handles; Docker labels must locate the container.
+    restarted_service = DockerSandboxService(
+        data_dir=tmp_path / "repopilot-data",
+        artifact_store=artifact_store,
+        tenant_id=TENANT_ID,
+    )
+    cleanup_ref = await restarted_service.cleanup_run(run_id)
+
+    assert cleanup_ref.kind is ArtifactKind.CLEANUP_REPORT
+    assert not (tmp_path / "repopilot-data" / "sandboxes" / str(sandbox_id)).exists()
+    await sandbox_service.destroy(sandbox_id)  # idempotent when prior worker retained stale handle
+
+
 async def test_fork_bomb_is_contained(
     sandbox_service: DockerSandboxService, source_archive_ref: tuple
 ) -> None:

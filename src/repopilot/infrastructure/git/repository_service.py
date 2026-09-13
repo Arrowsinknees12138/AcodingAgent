@@ -578,7 +578,7 @@ class GitRepositoryService:
             "cleaned_at": datetime.now(UTC).isoformat(),
         }
         return await self._artifact_store.put_bytes(
-            ArtifactKind.LOG,
+            ArtifactKind.CLEANUP_REPORT,
             json.dumps(report).encode("utf-8"),
             ArtifactMetadata(
                 tenant_id=self._tenant_id,

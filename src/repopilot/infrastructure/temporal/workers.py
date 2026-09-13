@@ -14,6 +14,7 @@ import sys
 from temporalio.worker import Worker
 
 from repopilot.activities.developer import DeveloperActivities
+from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
 from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
@@ -68,12 +69,17 @@ async def _run_orchestration_worker() -> None:
     client = await connect(settings)
     projection_store = PostgresRunProjectionStore(get_session_factory())
     projection_activities = ProjectionActivities(projection_store)
+    artifacts = await _artifact_store()
+    finalization = FinalizationActivities(
+        artifact_store=artifacts,
+        usage_reader=PostgresModelBudgetStore(get_session_factory()),
+    )
 
     worker = Worker(
         client,
         task_queue=ORCHESTRATION_TASK_QUEUE,
         workflows=[CodeRepairWorkflow],
-        activities=[projection_activities.update_projection],
+        activities=[projection_activities.update_projection, finalization.build_final_report],
     )
     logger = get_logger(component="worker", queue="orchestration")
     logger.info("worker.starting", task_queue=ORCHESTRATION_TASK_QUEUE)
@@ -102,6 +108,7 @@ async def _run_repository_worker() -> None:
             repository_activities.integrate_patch,
             repository_activities.export_candidate,
             repository_activities.build_final_diff,
+            repository_activities.cleanup_repository,
         ],
     )
     get_logger(component="worker", queue="repository").info(
@@ -136,6 +143,7 @@ async def _run_sandbox_worker() -> None:
             verification.verify_baseline,
             verification.verify_sealed_tests_on_base,
             verification.verify_candidate,
+            verification.cleanup_sandboxes,
         ],
     )
     get_logger(component="worker", queue="sandbox").info(

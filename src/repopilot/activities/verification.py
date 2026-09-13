@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from temporalio import activity
 
 from repopilot.domain import StrictModel
@@ -154,3 +156,9 @@ class VerificationActivities:
             await self._artifacts.get_bytes(report_ref, caller)
         )
         return VerifyCandidateResult(report_ref=report_ref, passed=report.passed)
+
+    @activity.defn(name="cleanup_sandboxes")
+    async def cleanup_sandboxes(self, run_id: UUID) -> ArtifactRef:
+        if self._sandbox is None:
+            raise RuntimeError("sandbox cleanup is not configured")
+        return await self._sandbox.cleanup_run(run_id)

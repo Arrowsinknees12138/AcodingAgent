@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from repopilot.domain.artifacts import ArtifactRef
@@ -17,6 +17,7 @@ from repopilot.services.model_gateway import (
     ModelCallContext,
     ModelCallReservation,
     ModelUsage,
+    ModelUsageTotals,
 )
 
 
@@ -166,6 +167,32 @@ class PostgresModelBudgetStore(ModelBudgetStore):
             if call.status == "RESERVED":
                 call.status = "UNKNOWN"
                 call.updated_at = datetime.now(UTC)
+
+    async def get_run_usage(self, *, run_id: UUID, tenant_id: UUID) -> ModelUsageTotals:
+        async with self._session_factory() as session:
+            row = (
+                await session.execute(
+                    select(
+                        func.count(ModelCall.model_call_id),
+                        func.coalesce(func.sum(ModelCall.input_tokens), 0),
+                        func.coalesce(func.sum(ModelCall.output_tokens), 0),
+                        func.coalesce(func.sum(ModelCall.actual_usd), Decimal("0")),
+                        func.coalesce(
+                            func.sum(case((ModelCall.status == "UNKNOWN", 1), else_=0)), 0
+                        ),
+                    ).where(
+                        ModelCall.run_id == run_id,
+                        ModelCall.tenant_id == tenant_id,
+                    )
+                )
+            ).one()
+        return ModelUsageTotals(
+            model_calls=int(row[0]),
+            input_tokens=int(row[1]),
+            output_tokens=int(row[2]),
+            cost_usd=Decimal(row[3]),
+            unknown_calls=int(row[4]),
+        )
 
     async def _lock_call_and_budget(
         self, session: AsyncSession, model_call_id: UUID

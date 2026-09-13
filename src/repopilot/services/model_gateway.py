@@ -32,6 +32,18 @@ class ModelUsage(StrictModel):
     cost_usd: Decimal = Field(ge=0)
 
 
+class ModelUsageTotals(StrictModel):
+    model_calls: int = Field(ge=0)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    cost_usd: Decimal = Field(ge=0)
+    unknown_calls: int = Field(ge=0)
+
+
+class ModelUsageReader(Protocol):
+    async def get_run_usage(self, *, run_id: UUID, tenant_id: UUID) -> ModelUsageTotals: ...
+
+
 class ModelResponse[T: BaseModel](StrictModel):
     output: T
     usage: ModelUsage

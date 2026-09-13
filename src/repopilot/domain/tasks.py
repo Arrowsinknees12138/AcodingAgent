@@ -133,3 +133,10 @@ class FinalReport(StrictModel):
     duration_seconds: int
     repair_rounds: int
     error: ErrorInfo | None
+
+
+class CleanupReport(StrictModel):
+    run_id: UUID
+    repository_cleanup_ref: ArtifactRef | None
+    sandbox_cleanup_ref: ArtifactRef | None
+    warnings: tuple[str, ...]

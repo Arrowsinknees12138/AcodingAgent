@@ -1,8 +1,7 @@
 """`CodeRepairWorkflow`（实施设计第 8 节）。
 
-当前已接入真实 ingest、repository scan、baseline verification 和 Planner
-Activity；QA/Developer/Reviewer 仍保留状态占位，等待对应角色 Activity 接线。
-状态序列完整遵循 8.6 节，不通过额外捷径跳过审批或终态清理闸口。
+当前已接入 ingest、planning、sealed QA、DAG development、verification、
+review、approval、cleanup 和 final report；所有结果均经过 FINALIZING 闸口。
 
 `workflows` 层不允许任何外部 I/O（第 6 节）：这里唯一的副作用是通过
 `workflow.execute_activity_method` 调度 `update_projection` Activity，
@@ -12,7 +11,7 @@ Activity；QA/Developer/Reviewer 仍保留状态占位，等待对应角色 Acti
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 import temporalio.exceptions
@@ -20,6 +19,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from repopilot.activities.developer import DeveloperActivities, DevelopPatchInput
+from repopilot.activities.finalization import BuildFinalReportInput, FinalizationActivities
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
 from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
@@ -40,7 +40,7 @@ from repopilot.activities.verification import (
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
 from repopilot.domain.enums import ApprovalMode, RiskLevel, RunStatus
-from repopilot.domain.errors import ErrorInfo
+from repopilot.domain.errors import ErrorCode, ErrorInfo
 from repopilot.domain.plans import PlannedFileChange
 from repopilot.domain.policies import (
     ApprovalPolicy,
@@ -65,6 +65,7 @@ _REPOSITORY_START_TO_CLOSE = timedelta(minutes=10)
 _SANDBOX_START_TO_CLOSE = timedelta(minutes=15)
 _MODEL_START_TO_CLOSE = timedelta(minutes=10)
 _MODEL_SCHEDULE_TO_START = timedelta(minutes=2)
+_CLEANUP_RETRY_POLICY = RetryPolicy(maximum_attempts=5)
 
 
 class CodeRepairWorkflowInput(StrictModel):
@@ -94,10 +95,18 @@ class CodeRepairWorkflow:
         self._approvals: dict[str, ApprovalRequest] = {}
         self._base_revision: str | None = None
         self._projection_sequence = 0
+        self._started_at: datetime | None = None
+        self._repository_url = ""
+        self._final_revision: str | None = None
+        self._patch_ref: ArtifactRef | None = None
+        self._verification_ref: ArtifactRef | None = None
+        self._review_ref: ArtifactRef | None = None
+        self._repair_rounds = 0
 
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
         self._workflow_id = workflow.info().workflow_id
+        self._started_at = workflow.now()
         await self._record_projection(workflow_input)  # 记录初始 QUEUED
 
         try:
@@ -112,6 +121,7 @@ class CodeRepairWorkflow:
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
             self._base_revision = ingest_result.base_revision
+            self._repository_url = ingest_result.repository_url
             task_spec_ref = ingest_result.task_spec_ref
             if ingest_result.requires_requirements_approval:
                 approval = await self._wait_for_approval(
@@ -120,7 +130,11 @@ class CodeRepairWorkflow:
                     status=RunStatus.WAITING_REQUIREMENTS_APPROVAL,
                 )
                 if approval.decision == "reject":
-                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(ErrorCode.APPROVAL_REJECTED, "requirements rejected"),
+                    )
                 assert approval.replacement_acceptance_criteria is not None
                 task_spec_ref = await workflow.execute_activity_method(
                     IngestActivities.finalize_task_spec,
@@ -187,7 +201,11 @@ class CodeRepairWorkflow:
                     status=RunStatus.WAITING_PLAN_APPROVAL,
                 )
                 if approval.decision == "reject":
-                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(ErrorCode.APPROVAL_REJECTED, "plan rejected"),
+                    )
 
             await self._transition(workflow_input, RunStatus.DESIGNING_TESTS)
             test_plan_ref = await workflow.execute_activity_method(
@@ -219,7 +237,11 @@ class CodeRepairWorkflow:
                     status=RunStatus.WAITING_TEST_APPROVAL,
                 )
                 if approval.decision == "reject":
-                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(ErrorCode.APPROVAL_REJECTED, "test plan rejected"),
+                    )
 
             if approval_stages.execution is ApprovalMode.MANUAL:
                 approval = await self._wait_for_approval(
@@ -228,7 +250,11 @@ class CodeRepairWorkflow:
                     status=RunStatus.WAITING_EXECUTION_APPROVAL,
                 )
                 if approval.decision == "reject":
-                    return await self._finalize(workflow_input, RunStatus.REJECTED)
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(ErrorCode.APPROVAL_REJECTED, "execution rejected"),
+                    )
 
             await self._transition(workflow_input, RunStatus.EXECUTING)
             work_items = {item.work_item_id: item for item in planning_result.work_items}
@@ -293,6 +319,15 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
+            self._final_revision = candidate.revision
+            diff_ref = await workflow.execute_activity_method(
+                RepositoryActivities.build_final_diff,
+                task_spec_ref.run_id,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+            )
+            self._patch_ref = diff_ref
             verification_result = await workflow.execute_activity_method(
                 VerificationActivities.verify_candidate,
                 VerifyCandidateInput(
@@ -307,16 +342,18 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
+            self._verification_ref = verification_result.report_ref
             if not verification_result.passed:
-                return await self._finalize(workflow_input, RunStatus.FAILED)
+                return await self._finalize(
+                    workflow_input,
+                    RunStatus.FAILED,
+                    error=self._error(
+                        ErrorCode.VERIFICATION_FAILED,
+                        "candidate verification failed",
+                        verification_result.report_ref,
+                    ),
+                )
             await self._transition(workflow_input, RunStatus.REVIEWING)
-            diff_ref = await workflow.execute_activity_method(
-                RepositoryActivities.build_final_diff,
-                task_spec_ref.run_id,
-                task_queue=REPOSITORY_TASK_QUEUE,
-                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
             review_result = await workflow.execute_activity_method(
                 ReviewerActivities.review_candidate,
                 ReviewCandidateInput(
@@ -329,10 +366,27 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_MODEL_START_TO_CLOSE,
                 retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
             )
+            self._review_ref = review_result.review_ref
             if review_result.decision == "reject":
-                return await self._finalize(workflow_input, RunStatus.REJECTED)
+                return await self._finalize(
+                    workflow_input,
+                    RunStatus.REJECTED,
+                    error=self._error(
+                        ErrorCode.REVIEW_REJECTED,
+                        "reviewer rejected candidate",
+                        review_result.review_ref,
+                    ),
+                )
             if review_result.decision == "request_changes":
-                return await self._finalize(workflow_input, RunStatus.FAILED)
+                return await self._finalize(
+                    workflow_input,
+                    RunStatus.FAILED,
+                    error=self._error(
+                        ErrorCode.REVIEW_REJECTED,
+                        "reviewer requested changes and repair is exhausted",
+                        review_result.review_ref,
+                    ),
+                )
 
             if approval_stages.delivery is ApprovalMode.AUTOMATIC:
                 return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
@@ -343,13 +397,23 @@ class CodeRepairWorkflow:
                 status=RunStatus.WAITING_DELIVERY_APPROVAL,
             )
             if approval.decision == "reject":
-                return await self._finalize(workflow_input, RunStatus.REJECTED)
+                return await self._finalize(
+                    workflow_input,
+                    RunStatus.REJECTED,
+                    error=self._error(ErrorCode.APPROVAL_REJECTED, "delivery rejected"),
+                )
             return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
         except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
             # cleanup cancellation scope 的最小版本：取消请求到达后，仍然
             # 执行一次 finalize，把状态机推进到 CANCELLED，而不是让 Workflow
             # Task 直接以异常结束、停留在一个非终态上。
-            return await self._finalize(workflow_input, RunStatus.CANCELLED)
+            return await asyncio.shield(
+                self._finalize(
+                    workflow_input,
+                    RunStatus.CANCELLED,
+                    error=self._error(ErrorCode.WORKFLOW_CANCELLED, "workflow cancelled"),
+                )
+            )
 
     @workflow.query
     def get_status(self) -> RunStatus:
@@ -409,16 +473,80 @@ class CodeRepairWorkflow:
         await self._record_projection(workflow_input)
 
     async def _finalize(
-        self, workflow_input: CodeRepairWorkflowInput, outcome: RunStatus
+        self,
+        workflow_input: CodeRepairWorkflowInput,
+        outcome: RunStatus,
+        *,
+        error: ErrorInfo | None = None,
     ) -> CodeRepairWorkflowOutput:
         if self._status is not RunStatus.FINALIZING:
             await self._transition(workflow_input, RunStatus.FINALIZING)
+        warnings: list[str] = []
+        sandbox_cleanup_ref: ArtifactRef | None = None
+        repository_cleanup_ref: ArtifactRef | None = None
+        try:
+            sandbox_cleanup_ref = await workflow.execute_activity_method(
+                VerificationActivities.cleanup_sandboxes,
+                workflow_input.run_id,
+                task_queue=SANDBOX_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_CLEANUP_RETRY_POLICY,
+            )
+        except Exception as exc:
+            warnings.append(f"sandbox cleanup failed: {exc}")
+        try:
+            repository_cleanup_ref = await workflow.execute_activity_method(
+                RepositoryActivities.cleanup_repository,
+                workflow_input.run_id,
+                task_queue=REPOSITORY_TASK_QUEUE,
+                start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
+                retry_policy=_CLEANUP_RETRY_POLICY,
+            )
+        except Exception as exc:
+            warnings.append(f"repository cleanup failed: {exc}")
+
+        if self._base_revision is None or not self._repository_url or self._started_at is None:
+            raise RuntimeError("cannot build final report before ingest metadata is available")
+        final_report_ref = await workflow.execute_activity_method(
+            FinalizationActivities.build_final_report,
+            BuildFinalReportInput(
+                run_id=workflow_input.run_id,
+                tenant_id=workflow_input.tenant_id,
+                status=outcome,
+                repository_url=self._repository_url,
+                base_revision=self._base_revision,
+                final_revision=self._final_revision,
+                patch_ref=self._patch_ref,
+                verification_ref=self._verification_ref,
+                review_ref=self._review_ref,
+                repository_cleanup_ref=repository_cleanup_ref,
+                sandbox_cleanup_ref=sandbox_cleanup_ref,
+                warnings=tuple(warnings),
+                started_at=self._started_at,
+                finished_at=workflow.now(),
+                repair_rounds=self._repair_rounds,
+                error=error,
+            ),
+            start_to_close_timeout=_PROJECTION_START_TO_CLOSE,
+            schedule_to_start_timeout=_PROJECTION_SCHEDULE_TO_START,
+            retry_policy=_PROJECTION_RETRY_POLICY,
+        )
         await self._transition(workflow_input, outcome)
         return CodeRepairWorkflowOutput(
             run_id=workflow_input.run_id,
             status=outcome,
-            final_report_ref=None,
-            failure=None,
+            final_report_ref=final_report_ref,
+            failure=error,
+        )
+
+    @staticmethod
+    def _error(code: ErrorCode, message: str, details_ref: ArtifactRef | None = None) -> ErrorInfo:
+        return ErrorInfo(
+            code=code,
+            message=message,
+            retryable=False,
+            source="workflow",
+            details_ref=details_ref,
         )
 
     async def _record_projection(self, workflow_input: CodeRepairWorkflowInput) -> None:

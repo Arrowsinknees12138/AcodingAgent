@@ -413,6 +413,80 @@ class DockerSandboxService:
             shutil.rmtree(resolved, ignore_errors=True)
         logger.info("sandbox.destroy", sandbox_id=str(sandbox_id))
 
+    async def cleanup_run(self, run_id: UUID) -> ArtifactRef:
+        """Remove every runtime sandbox carrying this exact run label.
+
+        Docker label discovery covers worker restarts where the in-memory handle map was
+        lost. Content-addressed dependency layers are deliberately retained as cache.
+        """
+        containers_by_id: dict[str, Container] = {}
+        sandbox_ids: set[UUID] = set()
+        for sandbox_id, handle in tuple(self._handles.items()):
+            if handle.run_id == run_id:
+                containers_by_id[handle.container.id] = handle.container
+                sandbox_ids.add(sandbox_id)
+                self._handles.pop(sandbox_id, None)
+
+        discovered = await asyncio.to_thread(
+            self._client.containers.list,
+            all=True,
+            filters={"label": f"repopilot.run_id={run_id}"},
+        )
+        for container in discovered:
+            containers_by_id[container.id] = container
+            raw_sandbox_id = container.labels.get("repopilot.sandbox_id")
+            if raw_sandbox_id is not None:
+                try:
+                    sandbox_ids.add(UUID(raw_sandbox_id))
+                except ValueError:
+                    logger.warning(
+                        "sandbox.cleanup.invalid_label",
+                        run_id=str(run_id),
+                        sandbox_id=raw_sandbox_id,
+                    )
+
+        removed_containers: list[str] = []
+        for container in containers_by_id.values():
+            try:
+                await asyncio.to_thread(container.stop, timeout=3)
+            except NotFound:
+                pass
+            try:
+                await asyncio.to_thread(container.remove, force=True)
+            except NotFound:
+                pass
+            removed_containers.append(container.id)
+
+        removed_paths: list[str] = []
+        allowed_root = self._sandboxes_dir.resolve()
+        for sandbox_id in sandbox_ids:
+            sandbox_root = (self._sandboxes_dir / str(sandbox_id)).resolve()
+            if sandbox_root.parent != allowed_root:
+                continue
+            if sandbox_root.exists():
+                shutil.rmtree(sandbox_root, ignore_errors=True)
+                removed_paths.append(str(sandbox_root))
+
+        report = json.dumps(
+            {
+                "run_id": str(run_id),
+                "removed_container_ids": sorted(removed_containers),
+                "removed_paths": sorted(removed_paths),
+                "cleaned_at": datetime.now(UTC).isoformat(),
+            },
+            sort_keys=True,
+        ).encode()
+        return await self._artifact_store.put_bytes(
+            ArtifactKind.CLEANUP_REPORT,
+            report,
+            ArtifactMetadata(
+                tenant_id=self._tenant_id,
+                run_id=run_id,
+                base_revision="0" * 40,
+                schema_version="1",
+            ),
+        )
+
     # ------------------------------------------------------------------
     # 内部辅助
     # ------------------------------------------------------------------

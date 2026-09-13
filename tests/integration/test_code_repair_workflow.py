@@ -109,6 +109,7 @@ async def test_run_completes_when_auto_approved(temporal_client: Client) -> None
     )
     result = await handle.result()
     assert result.status == RunStatus.SUCCEEDED
+    assert result.final_report_ref is not None
 
     status = await handle.query(CodeRepairWorkflow.get_status)
     assert status == RunStatus.SUCCEEDED
@@ -130,7 +131,10 @@ async def test_candidate_verification_failure_stops_before_review(
         task_queue=ORCHESTRATION_TASK_QUEUE,
     )
 
-    assert (await handle.result()).status is RunStatus.FAILED
+    result = await handle.result()
+    assert result.status is RunStatus.FAILED
+    assert result.final_report_ref is not None
+    assert result.failure is not None
 
 
 async def test_reviewer_blocker_prevents_delivery(temporal_client: Client) -> None:
@@ -147,7 +151,10 @@ async def test_reviewer_blocker_prevents_delivery(temporal_client: Client) -> No
         task_queue=ORCHESTRATION_TASK_QUEUE,
     )
 
-    assert (await handle.result()).status is RunStatus.FAILED
+    result = await handle.result()
+    assert result.status is RunStatus.FAILED
+    assert result.final_report_ref is not None
+    assert result.failure is not None
 
 
 async def test_missing_acceptance_criteria_requires_requirements_approval(
@@ -410,6 +417,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                 fake_pipeline.integrate_patch,
                 fake_pipeline.export_candidate,
                 fake_pipeline.build_final_diff,
+                fake_pipeline.cleanup_repository,
             ],
         )
         sandbox_worker = Worker(
@@ -420,6 +428,7 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                 fake_pipeline.verify_baseline,
                 fake_pipeline.verify_sealed_tests_on_base,
                 fake_pipeline.verify_candidate,
+                fake_pipeline.cleanup_sandboxes,
             ],
         )
         model_worker = Worker(
@@ -437,7 +446,10 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
             env.client,
             task_queue=ORCHESTRATION_TASK_QUEUE,
             workflows=[CodeRepairWorkflow],
-            activities=[projection_activities.update_projection],
+            activities=[
+                projection_activities.update_projection,
+                fake_pipeline.build_final_report,
+            ],
             max_cached_workflows=0,
         )
         async with repository_worker, sandbox_worker, model_worker:
@@ -465,7 +477,10 @@ async def test_worker_restart_recovers_pending_run(db_engine: object) -> None:
                 env.client,
                 task_queue=ORCHESTRATION_TASK_QUEUE,
                 workflows=[CodeRepairWorkflow],
-                activities=[projection_activities.update_projection],
+                activities=[
+                    projection_activities.update_projection,
+                    fake_pipeline.build_final_report,
+                ],
                 max_cached_workflows=0,
             )
             async with second_worker:

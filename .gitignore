@@ -18,7 +18,7 @@ uv.lock.bak
 
 # --- 测试与覆盖率 ---
 .pytest_cache/
-.pytest-tmp/
+.pytest-tmp*/
 .coverage
 .coverage.*
 htmlcov/

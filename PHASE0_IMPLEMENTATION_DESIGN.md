@@ -2045,6 +2045,13 @@ class FinalReport(StrictModel):
     error: ErrorInfo | None
 ```
 
+实现补充：终态前分别运行幂等的 Repository/Sandbox cleanup，产出各自的
+`CLEANUP_REPORT` Artifact；编排 Worker 将二者的引用和 warning 合并到
+`CleanupReport`，再持久化 `FinalReport`。Sandbox cleanup 通过精确 Run label
+发现 Worker 重启后遗留的容器，内容寻址依赖层保留作缓存。模型用量由该 Run
+的 PostgreSQL `model_calls` 汇总，UNKNOWN 状态在 warning 中明示；当前
+`sandbox_seconds` 尚无跨 Activity 计量，填 0 并在报告中提示未计量。
+
 报告必须区分：
 
 - 平台错误。

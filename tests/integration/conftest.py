@@ -23,6 +23,7 @@ from temporalio.worker import Worker
 from testcontainers.community.postgres import PostgresContainer
 
 from repopilot.activities.developer import DevelopPatchInput
+from repopilot.activities.finalization import BuildFinalReportInput
 from repopilot.activities.ingest import FinalizeTaskSpecInput
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult
 from repopilot.activities.projections import ProjectionActivities
@@ -227,6 +228,45 @@ class FakePipelineActivities:
             decision="request_changes" if blocked else "approve",
         )
 
+    @activity.defn(name="cleanup_repository")
+    async def cleanup_repository(self, run_id: UUID) -> ArtifactRef:
+        return self._run_ref(run_id, UUID(int=0), ArtifactKind.CLEANUP_REPORT, "repository")
+
+    @activity.defn(name="cleanup_sandboxes")
+    async def cleanup_sandboxes(self, run_id: UUID) -> ArtifactRef:
+        return self._run_ref(run_id, UUID(int=0), ArtifactKind.CLEANUP_REPORT, "sandbox")
+
+    @activity.defn(name="build_final_report")
+    async def build_final_report(self, payload: BuildFinalReportInput) -> ArtifactRef:
+        return self._run_ref(
+            payload.run_id,
+            payload.tenant_id,
+            ArtifactKind.FINAL_REPORT,
+            payload.status.value,
+        )
+
+    @staticmethod
+    def _run_ref(
+        run_id: UUID,
+        tenant_id: UUID,
+        kind: ArtifactKind,
+        salt: str,
+    ) -> ArtifactRef:
+        digest = sha256(f"{run_id}:{kind.value}:{salt}".encode()).hexdigest()
+        return ArtifactRef(
+            artifact_id=uuid4(),
+            run_id=run_id,
+            tenant_id=tenant_id,
+            kind=kind,
+            schema_version="1",
+            object_key=f"fake/{run_id}/{kind.value}/{digest}",
+            sha256=digest,
+            size_bytes=1,
+            base_revision="a" * 40,
+            input_artifact_ids=(),
+            created_at=datetime.now(UTC),
+        )
+
 
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
@@ -258,7 +298,10 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
             env.client,
             task_queue=ORCHESTRATION_TASK_QUEUE,
             workflows=[CodeRepairWorkflow],
-            activities=[projection_activities.update_projection],
+            activities=[
+                projection_activities.update_projection,
+                fake_pipeline.build_final_report,
+            ],
         )
         repository_worker = Worker(
             env.client,
@@ -271,6 +314,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
                 fake_pipeline.integrate_patch,
                 fake_pipeline.export_candidate,
                 fake_pipeline.build_final_diff,
+                fake_pipeline.cleanup_repository,
             ],
         )
         sandbox_worker = Worker(
@@ -281,6 +325,7 @@ async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
                 fake_pipeline.verify_baseline,
                 fake_pipeline.verify_sealed_tests_on_base,
                 fake_pipeline.verify_candidate,
+                fake_pipeline.cleanup_sandboxes,
             ],
         )
         model_worker = Worker(
