@@ -96,6 +96,7 @@ class FakePipelineActivities:
         self._last_integrated_ref: ArtifactRef | None = None
         self._verification_attempts: dict[UUID, int] = {}
         self._dependency_prepares: dict[UUID, int] = {}
+        self.qa_attempts: dict[UUID, int] = {}
 
     @activity.defn(name="ingest_task")
     async def ingest_task(self, request_ref: ArtifactRef) -> IngestResult:
@@ -144,12 +145,20 @@ class FakePipelineActivities:
     async def verify_sealed_tests_on_base(
         self, payload: VerifySealedTestsInput
     ) -> VerifySealedTestsResult:
+        qa_attempt = self.qa_attempts.get(payload.test_plan_ref.run_id, 0)
+        if payload.test_plan_ref.size_bytes in (8, 9):
+            assert qa_attempt > 0
+        valid = payload.test_plan_ref.size_bytes != 9 and (
+            payload.test_plan_ref.size_bytes != 8 or qa_attempt > 1
+        )
         return VerifySealedTestsResult(
             report_ref=_derived_ref(
                 payload.test_plan_ref,
                 ArtifactKind.SEALED_TEST_BASELINE_REPORT,
             ),
-            valid=True,
+            valid=valid,
+            runnable=True,
+            mismatch_count=0 if valid else 1,
         )
 
     @activity.defn(name="plan_change")
@@ -184,6 +193,13 @@ class FakePipelineActivities:
 
     @activity.defn(name="design_sealed_tests")
     async def design_sealed_tests(self, payload: DesignSealedTestsInput) -> ArtifactRef:
+        run_id = payload.task_spec_ref.run_id
+        assert payload.attempt == self.qa_attempts.get(run_id, 0) + 1
+        if payload.attempt > 1:
+            assert payload.baseline_report_ref is not None
+            assert payload.previous_test_plan_ref is not None
+            assert payload.sealed_baseline_report_ref is not None
+        self.qa_attempts[run_id] = payload.attempt
         return _derived_ref(payload.task_spec_ref, ArtifactKind.TEST_PLAN)
 
     @activity.defn(name="build_developer_context")
@@ -304,11 +320,17 @@ async def db_engine(postgres_container: PostgresContainer) -> AsyncIterator[Asyn
         await engine.dispose()
 
 
+@pytest.fixture
+def fake_pipeline() -> FakePipelineActivities:
+    return FakePipelineActivities()
+
+
 @pytest_asyncio.fixture
-async def temporal_client(db_engine: AsyncEngine) -> AsyncIterator[Client]:
+async def temporal_client(
+    db_engine: AsyncEngine, fake_pipeline: FakePipelineActivities
+) -> AsyncIterator[Client]:
     session_factory = async_sessionmaker(bind=db_engine, expire_on_commit=False)
     projection_activities = ProjectionActivities(PostgresRunProjectionStore(session_factory))
-    fake_pipeline = FakePipelineActivities()
 
     async with await WorkflowEnvironment.start_time_skipping(data_converter=data_converter) as env:
         worker = Worker(

@@ -68,6 +68,7 @@ _SANDBOX_START_TO_CLOSE = timedelta(minutes=15)
 _MODEL_START_TO_CLOSE = timedelta(minutes=10)
 _MODEL_SCHEDULE_TO_START = timedelta(minutes=2)
 _CLEANUP_RETRY_POLICY = RetryPolicy(maximum_attempts=5)
+_QA_MAX_REVISIONS = 2
 
 
 class CodeRepairWorkflowInput(StrictModel):
@@ -216,29 +217,49 @@ class CodeRepairWorkflow:
                     )
 
             await self._transition(workflow_input, RunStatus.DESIGNING_TESTS)
-            test_plan_ref = await workflow.execute_activity_method(
-                QaActivities.design_sealed_tests,
-                DesignSealedTestsInput(
-                    task_spec_ref=task_spec_ref,
-                    repository_snapshot_ref=snapshot_ref,
-                ),
-                task_queue=MODEL_TASK_QUEUE,
-                schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
-                start_to_close_timeout=_MODEL_START_TO_CLOSE,
-                retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
-            )
-            sealed_test_result = await workflow.execute_activity_method(
-                VerificationActivities.verify_sealed_tests_on_base,
-                VerifySealedTestsInput(
-                    snapshot_ref=snapshot_ref,
-                    test_plan_ref=test_plan_ref,
-                    dependency_layer_key=dependency_result.dependency_layer_key,
-                ),
-                task_queue=SANDBOX_TASK_QUEUE,
-                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
-            if not sealed_test_result.valid:
+            # Old workflow histories must keep their original activity sequence on replay.
+            qa_feedback_enabled = workflow.patched("qa-baseline-feedback-v1")
+            previous_test_plan_ref: ArtifactRef | None = None
+            sealed_baseline_report_ref: ArtifactRef | None = None
+            max_qa_attempts = 1 + (_QA_MAX_REVISIONS if qa_feedback_enabled else 0)
+            for qa_attempt in range(1, max_qa_attempts + 1):
+                test_plan_ref = await workflow.execute_activity_method(
+                    QaActivities.design_sealed_tests,
+                    DesignSealedTestsInput(
+                        task_spec_ref=task_spec_ref,
+                        repository_snapshot_ref=snapshot_ref,
+                        baseline_report_ref=baseline_report_ref if qa_feedback_enabled else None,
+                        previous_test_plan_ref=previous_test_plan_ref,
+                        sealed_baseline_report_ref=sealed_baseline_report_ref,
+                        attempt=qa_attempt,
+                    ),
+                    task_queue=MODEL_TASK_QUEUE,
+                    schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                    start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                    retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+                )
+                sealed_test_result = await workflow.execute_activity_method(
+                    VerificationActivities.verify_sealed_tests_on_base,
+                    VerifySealedTestsInput(
+                        snapshot_ref=snapshot_ref,
+                        test_plan_ref=test_plan_ref,
+                        dependency_layer_key=dependency_result.dependency_layer_key,
+                    ),
+                    task_queue=SANDBOX_TASK_QUEUE,
+                    start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                )
+                if sealed_test_result.valid:
+                    break
+                if (
+                    qa_feedback_enabled
+                    and qa_attempt < max_qa_attempts
+                    and sealed_test_result.runnable
+                    and sealed_test_result.mismatch_count > 0
+                ):
+                    previous_test_plan_ref = test_plan_ref
+                    sealed_baseline_report_ref = sealed_test_result.report_ref
+                    continue
                 approval = await self._wait_for_approval(
                     workflow_input,
                     kind="test",
@@ -250,6 +271,7 @@ class CodeRepairWorkflow:
                         RunStatus.REJECTED,
                         error=self._error(ErrorCode.APPROVAL_REJECTED, "test plan rejected"),
                     )
+                break
 
             if approval_stages.execution is ApprovalMode.MANUAL:
                 approval = await self._wait_for_approval(

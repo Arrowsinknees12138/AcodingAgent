@@ -53,6 +53,8 @@ def _fake_create_request_ref(
     candidate_repairs_once: bool = False,
     reviewer_repairs_once: bool = False,
     dependency_change: bool = False,
+    sealed_tests_need_revision: bool = False,
+    sealed_tests_never_match: bool = False,
 ) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
@@ -63,22 +65,32 @@ def _fake_create_request_ref(
         object_key="fake/key",
         sha256="a" * 64,
         size_bytes=(
-            0
-            if missing_acceptance_criteria
+            8
+            if sealed_tests_need_revision
             else (
-                4
-                if ingest_should_fail
+                9
+                if sealed_tests_never_match
                 else (
-                    5
-                    if candidate_repairs_once
+                    0
+                    if missing_acceptance_criteria
                     else (
-                        7
-                        if dependency_change
+                        4
+                        if ingest_should_fail
                         else (
-                            6
-                            if reviewer_repairs_once
+                            5
+                            if candidate_repairs_once
                             else (
-                                2 if candidate_should_fail else (3 if reviewer_should_block else 1)
+                                7
+                                if dependency_change
+                                else (
+                                    6
+                                    if reviewer_repairs_once
+                                    else (
+                                        2
+                                        if candidate_should_fail
+                                        else (3 if reviewer_should_block else 1)
+                                    )
+                                )
                             )
                         )
                     )
@@ -136,6 +148,56 @@ async def test_run_completes_when_auto_approved(temporal_client: Client) -> None
 
     status = await handle.query(CodeRepairWorkflow.get_status)
     assert status == RunStatus.SUCCEEDED
+
+
+async def test_qa_revises_mismatched_sealed_tests_before_execution(
+    temporal_client: Client, fake_pipeline: FakePipelineActivities
+) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(sealed_tests_need_revision=True),
+        auto_approve_low_risk=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+    assert fake_pipeline.qa_attempts[workflow_input.create_request_ref.run_id] == 2
+
+
+async def test_qa_exhausts_revisions_then_requests_test_approval(
+    temporal_client: Client, fake_pipeline: FakePipelineActivities
+) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(sealed_tests_never_match=True),
+        auto_approve_low_risk=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_TEST_APPROVAL)
+    assert fake_pipeline.qa_attempts[workflow_input.create_request_ref.run_id] == 3
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="test",
+            decision="reject",
+            actor_id="human-1",
+            reason="baseline mismatch remains unresolved",
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.REJECTED
 
 
 async def test_candidate_verification_failure_stops_before_review(
