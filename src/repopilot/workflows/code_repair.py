@@ -411,6 +411,7 @@ class CodeRepairWorkflow:
                 "BUDGET_EXCEEDED": ErrorCode.BUDGET_EXCEEDED,
                 "MODEL_COMPLETION_UNKNOWN": ErrorCode.MODEL_COMPLETION_UNKNOWN,
                 "POLICY_DENIED": ErrorCode.POLICY_DENIED,
+                "DEVELOPER_OUTPUT_INVALID": ErrorCode.MODEL_OUTPUT_INVALID,
             }
             code = known.get(exc.cause.type or "")
             if code is not None:

@@ -76,16 +76,23 @@ class LocalOriginRepository(GitRepositoryService):
 
 
 @pytest.mark.parametrize(
-    ("requires_repair", "budget_exhausted", "preexisting_failure"),
-    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    ("requires_repair", "budget_exhausted", "preexisting_failure", "unauthorized_edit"),
+    [
+        (False, False, False, False),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+        (False, False, False, True),
+    ],
 )
-async def test_real_pipeline_success_repair_and_budget(
+async def test_real_pipeline_outcomes(
     tmp_path: Path,
     artifact_store,
     db_engine,  # type: ignore[no-untyped-def]
     requires_repair: bool,
     budget_exhausted: bool,
     preexisting_failure: bool,
+    unauthorized_edit: bool,
 ) -> None:
     origin = tmp_path / "origin"
     origin.mkdir()
@@ -165,7 +172,7 @@ async def test_real_pipeline_success_repair_and_budget(
         DeveloperPatchDesign(
             edits=(
                 DeveloperFileEdit(
-                    path="calc.py",
+                    path="pyproject.toml" if unauthorized_edit else "calc.py",
                     operation="modify",
                     content=(
                         "def add(a, b):\n    return a * b\n"
@@ -315,7 +322,9 @@ async def test_real_pipeline_success_repair_and_budget(
             with env.auto_time_skipping_disabled():
                 result = await handle.result()
 
-    assert result.status is (RunStatus.FAILED if budget_exhausted else RunStatus.SUCCEEDED)
+    assert result.status is (
+        RunStatus.FAILED if budget_exhausted or unauthorized_edit else RunStatus.SUCCEEDED
+    )
     assert result.final_report_ref is not None
     report = FinalReport.model_validate_json(
         await artifact_store.get_bytes(
@@ -329,6 +338,14 @@ async def test_real_pipeline_success_repair_and_budget(
         assert result.failure.code is ErrorCode.BUDGET_EXCEEDED
         assert report.model_calls == 2
         assert report.patch_ref is None
+        assert report.cleanup_report_ref is not None
+        return
+    if unauthorized_edit:
+        assert result.failure is not None
+        assert result.failure.code is ErrorCode.MODEL_OUTPUT_INVALID
+        assert report.model_calls == 3
+        assert report.patch_ref is None
+        assert report.changed_paths == ()
         assert report.cleanup_report_ref is not None
         return
     assert report.changed_paths == ("calc.py",)
