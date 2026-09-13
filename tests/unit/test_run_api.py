@@ -27,10 +27,11 @@ class FakeRunControl:
         self.approvals: list[ApprovalRequest] = []
         self.cancelled: list[UUID] = []
         self.keys: list[str] = []
+        self.requests: list[CreateRunRequest] = []
         self.artifact_id = uuid4()
 
     async def create(self, request: CreateRunRequest, *, idempotency_key: str) -> RunView:
-        del request
+        self.requests.append(request)
         self.keys.append(idempotency_key)
         return self._view()
 
@@ -132,6 +133,35 @@ def test_create_run_requires_authentication_and_idempotency_key() -> None:
     assert control.keys == [idempotency_key]
 
 
+def test_create_run_accepts_console_policy_options() -> None:
+    control = FakeRunControl()
+    body = _request_body()
+    body["acceptance_criteria"] = ["add(1, 2) 返回 3"]
+    body["risk_level"] = "high"
+    body["approval_policy"] = {
+        "mode": "custom",
+        "custom": {"plan": "manual", "execution": "manual", "delivery": "automatic"},
+    }
+    body["dependency_policy"] = {
+        "index_url": "https://pypi.org/simple",
+        "allow_lockfile_read": True,
+        "allow_cache": True,
+        "allow_new_dependencies": False,
+    }
+    response = _client(control).post(
+        "/v1/runs",
+        json=body,
+        headers={
+            "Authorization": "Bearer test-token",
+            "Idempotency-Key": str(uuid4()),
+        },
+    )
+    assert response.status_code == 202
+    assert control.requests[0].approval_policy.custom is not None
+    assert control.requests[0].approval_policy.custom.execution.value == "manual"
+    assert control.requests[0].dependency_policy.allow_new_dependencies is False
+
+
 def test_get_approve_and_cancel_run() -> None:
     control = FakeRunControl()
     client = _client(control)
@@ -156,6 +186,22 @@ def test_get_approve_and_cancel_run() -> None:
     assert control.cancelled == [control.run_id]
 
 
+def test_requirements_approval_from_console_can_supply_acceptance_criteria() -> None:
+    control = FakeRunControl()
+    response = _client(control).post(
+        f"/v1/runs/{control.run_id}/approvals",
+        headers={"Authorization": "Bearer test-token"},
+        json={
+            "kind": "requirements",
+            "decision": "approve",
+            "reason": "已确认",
+            "replacement_acceptance_criteria": ["add(1, 2) 返回 3"],
+        },
+    )
+    assert response.status_code == 204
+    assert control.approvals[0].replacement_acceptance_criteria == ("add(1, 2) 返回 3",)
+
+
 def test_list_runs_is_authenticated_and_bounded() -> None:
     control = FakeRunControl()
     client = _client(control)
@@ -168,10 +214,14 @@ def test_list_runs_is_authenticated_and_bounded() -> None:
     assert too_many.status_code == 422
 
 
-def test_results_page_is_served_without_embedding_api_token() -> None:
+def test_task_console_is_served_without_embedding_api_token() -> None:
     response = _client(FakeRunControl()).get("/ui")
     assert response.status_code == 200
-    assert "RepoPilot 运行结果" in response.text
+    assert "RepoPilot 任务控制台" in response.text
+    assert 'id="create-form"' in response.text
+    assert 'id="run-actions"' in response.text
+    assert 'id="approval-mode"' in response.text
+    assert 'id="allow-dependencies" type="checkbox"' in response.text
     assert "test-token" not in response.text
     assert response.headers["cache-control"] == "no-store"
 

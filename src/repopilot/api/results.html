@@ -4,10 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>RepoPilot 运行结果</title>
+  <title>RepoPilot 任务控制台</title>
   <style>
     :root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #17202c; background: #f5f7fb; }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     body { margin: 0; }
     header { background: #172c4d; color: white; padding: 22px max(24px, calc((100vw - 1300px) / 2)); }
     h1 { font-size: 22px; margin: 0 0 6px; }
@@ -22,7 +23,15 @@
     .panel { background: white; border: 1px solid #dce3ed; border-radius: 10px; padding: 18px; box-shadow: 0 2px 8px #18314a0a; }
     .panel + .panel { margin-top: 16px; }
     label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-    input { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #b8c5d5; border-radius: 6px; font: inherit; }
+    input, textarea, select { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #b8c5d5; border-radius: 6px; background: white; font: inherit; }
+    textarea { min-height: 82px; resize: vertical; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 14px 0; }
+    .form-grid .wide { grid-column: 1 / -1; }
+    .form-grid label { margin-bottom: 0; }
+    .form-grid input, .form-grid textarea, .form-grid select { margin-top: 6px; }
+    .check-label { display: flex; gap: 8px; align-items: center; }
+    .check-label input { width: auto; margin: 0; }
+    .form-note { margin: 8px 0 14px; }
     button { padding: 10px 14px; border: 0; border-radius: 6px; background: #225ba4; color: white; font: inherit; cursor: pointer; }
     button:hover { background: #174880; }
     button:disabled { opacity: .55; cursor: default; }
@@ -53,13 +62,13 @@
     .empty { color: #66758a; font-size: 14px; }
     .section-note { margin: -8px 0 12px; }
     @media (max-width: 800px) { .toolbar { grid-template-columns: 1fr auto; } .layout { grid-template-columns: 1fr; } .summary { grid-template-columns: 1fr 1fr; } }
-    @media (max-width: 480px) { main { padding: 16px; } .summary { grid-template-columns: 1fr; } }
+    @media (max-width: 480px) { main { padding: 16px; } .summary, .form-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>RepoPilot 运行结果</h1>
-    <p class="muted">只读查看运行状态、审计事件、Agent 输入与模型返回、最终产物。不会执行审批或修改任务。</p>
+    <h1>RepoPilot 任务控制台</h1>
+    <p class="muted">创建任务、处理待审批步骤，并查看运行状态、Agent 交互和最终产物。</p>
   </header>
   <main>
     <div class="toolbar">
@@ -76,7 +85,37 @@
         <div id="runs" class="empty">尚未连接。</div>
       </aside>
       <div>
+        <section class="panel">
+          <h2>创建新任务</h2>
+          <form id="create-form">
+            <div class="form-grid">
+              <label class="wide">GitHub 仓库地址<input id="repo-url" type="url" required placeholder="https://github.com/owner/repo"></label>
+              <label class="wide">修复要求<textarea id="requirement" required placeholder="描述要修复的问题和不能改动的范围"></textarea></label>
+              <label class="wide">验收条件（每行一条）<textarea id="acceptance" placeholder="例如：add(1, 2) 返回 3"></textarea></label>
+              <label>提交 SHA（可选）<input id="revision" placeholder="留空使用仓库当前 HEAD"></label>
+              <label>风险级别<select id="risk-level"><option value="low">Low · 默认自动</option><option value="medium">Medium · 计划审批</option><option value="high">High · 计划及执行审批</option></select></label>
+            </div>
+            <details>
+              <summary>预算与高级设置</summary>
+              <div class="form-grid">
+                <label>最大费用（美元）<input id="max-cost" type="number" min="0.01" max="20" step="0.01" value="5" required></label>
+                <label>最长运行时间（秒）<input id="max-wall" type="number" min="1" max="7200" step="1" value="3600" required></label>
+                <label>最多模型调用<input id="max-calls" type="number" min="1" max="100" step="1" value="50" required></label>
+                <label>最多沙箱时间（秒）<input id="max-sandbox" type="number" min="1" max="3600" step="1" value="1800" required></label>
+                <label>审批模式<select id="approval-mode"><option value="risk_based">按风险自动决定</option><option value="custom">自定义阶段审批</option></select></label>
+                <div></div>
+                <label class="custom-approval" hidden>计划审批<select id="plan-approval"><option value="manual">人工批准</option><option value="automatic">自动批准</option></select></label>
+                <label class="custom-approval" hidden>执行审批<select id="execution-approval"><option value="automatic">自动批准</option><option value="manual">人工批准</option></select></label>
+                <label class="custom-approval" hidden>交付审批<select id="delivery-approval"><option value="automatic">自动批准</option><option value="manual">人工批准</option></select></label>
+                <label class="check-label wide"><input id="allow-dependencies" type="checkbox">任务明确要求新增依赖时才允许（默认禁止）</label>
+              </div>
+            </details>
+            <p class="muted form-note">固定使用官方 PyPI，允许读取 lockfile 和缓存；QA 保留验收、定向测试及范围检查。验收条件留空会触发需求审批。运行/沙箱秒数目前尚非全局硬截止。</p>
+            <button id="create-run" type="submit">开始新任务</button>
+          </form>
+        </section>
         <section class="panel"><h2>运行概览</h2><div id="overview" class="empty">请选择一个 Run。</div></section>
+        <section class="panel"><h2>任务操作</h2><div id="run-actions" class="empty">请选择一个 Run。</div></section>
         <section class="panel"><h2>最终结果与产物</h2><div id="results" class="empty">请选择一个 Run。</div></section>
         <section class="panel"><h2>Agent 输入与模型返回</h2><p class="muted section-note">按产物创建时间排列；并行调用不保证输入与返回自动配对。点击条目查看原文。</p><div id="interactions" class="empty">请选择一个 Run。</div></section>
         <section class="panel"><h2>审计事件</h2><div id="events" class="empty">请选择一个 Run。</div></section>
@@ -89,6 +128,16 @@
     let apiToken = "";
     let selectedRun = "";
     let requestVersion = 0;
+    let pendingCreate = null;
+    const approvalKinds = {
+      waiting_requirements_approval: "requirements",
+      waiting_plan_approval: "plan",
+      waiting_execution_approval: "execution",
+      waiting_test_approval: "test",
+      waiting_delivery_approval: "delivery",
+    };
+    const approvalLabels = { requirements: "需求", plan: "计划", execution: "执行", test: "测试豁免", delivery: "交付" };
+    const terminalStatuses = new Set(["succeeded", "failed", "rejected", "cancelled"]);
 
     function node(tag, className, value) {
       const item = document.createElement(tag);
@@ -113,9 +162,13 @@
       return badge;
     }
 
-    async function api(path) {
+    async function api(path, options = {}) {
       if (!apiToken) throw new Error("请先输入 API Token 并连接。");
-      const response = await fetch(path, { headers: { Authorization: `Bearer ${apiToken}` }, cache: "no-store" });
+      const response = await fetch(path, {
+        cache: "no-store",
+        ...options,
+        headers: { Authorization: `Bearer ${apiToken}`, ...(options.headers || {}) },
+      });
       if (!response.ok) {
         let detail = "";
         try { detail = (await response.json()).detail || ""; } catch (_) { /* no JSON body */ }
@@ -220,6 +273,84 @@
       container.append(grid);
     }
 
+    function renderActions(run) {
+      const container = $("run-actions");
+      container.replaceChildren();
+      if (terminalStatuses.has(run.status)) {
+        container.append(node("p", "empty", "任务已结束，没有待处理操作。"));
+        return;
+      }
+      const kind = approvalKinds[run.status];
+      if (kind) {
+        container.append(node("p", "muted", `当前等待${approvalLabels[kind]}审批。请先检查状态、计划和相关产物。`));
+        const reasonLabel = node("label", "", "审批理由");
+        const reason = node("textarea");
+        reason.id = "approval-reason";
+        reason.maxLength = 4000;
+        reason.placeholder = kind === "test" ? "必须说明被豁免的测试及理由" : "建议记录审查结论；拒绝时必填";
+        reasonLabel.append(reason);
+        container.append(reasonLabel);
+        if (kind === "requirements") {
+          const criteriaLabel = node("label", "", "确认后的验收条件（每行一条，批准时必填）");
+          const criteria = node("textarea");
+          criteria.id = "approval-criteria";
+          criteriaLabel.append(criteria);
+          container.append(criteriaLabel);
+        }
+        if (kind === "test") container.append(node("p", "muted form-note", "测试豁免可能降低验证强度；请先确认不是用来绕过真实 bug。"));
+        const row = node("div", "actions");
+        const approve = node("button", "", "批准并继续");
+        const reject = node("button", "secondary", "拒绝任务");
+        approve.type = reject.type = "button";
+        approve.addEventListener("click", () => submitApproval(run, "approve", approve, reject));
+        reject.addEventListener("click", () => submitApproval(run, "reject", approve, reject));
+        row.append(approve, reject);
+        container.append(row);
+      } else {
+        container.append(node("p", "empty", "任务正在运行，当前无需人工操作。"));
+      }
+      const cancel = node("button", "secondary", "取消任务");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => cancelRun(run.run_id, cancel));
+      const cancelRow = node("div", "actions");
+      cancelRow.append(cancel);
+      container.append(cancelRow);
+    }
+
+    async function submitApproval(run, decision, approveButton, rejectButton) {
+      const kind = approvalKinds[run.status];
+      if (!kind || run.run_id !== selectedRun) return;
+      const reason = $("approval-reason").value.trim();
+      const criteria = kind === "requirements" ? $("approval-criteria").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
+      if (decision === "reject" && !reason) { notice("拒绝任务时必须填写理由。", true); return; }
+      if (decision === "approve" && kind === "requirements" && !criteria.length) { notice("需求审批必须填写确认后的验收条件。", true); return; }
+      if (decision === "approve" && kind === "test" && !reason) { notice("测试豁免必须填写被豁免的测试及理由。", true); return; }
+      if (decision === "reject" && !window.confirm("确定拒绝这个任务？")) return;
+      if (decision === "approve" && kind === "test" && !window.confirm("确定批准测试豁免并继续？")) return;
+      const body = { kind, decision, reason };
+      if (kind === "requirements" && decision === "approve") body.replacement_acceptance_criteria = criteria;
+      approveButton.disabled = rejectButton.disabled = true;
+      try {
+        await api(`/v1/runs/${encodeURIComponent(run.run_id)}/approvals`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        });
+        await selectRun(run.run_id);
+        notice(`${decision === "approve" ? "批准" : "拒绝"}已提交；状态更新可能稍有延迟。`);
+      } catch (error) { notice(error.message, true); }
+      finally { approveButton.disabled = rejectButton.disabled = false; }
+    }
+
+    async function cancelRun(runId, button) {
+      if (runId !== selectedRun || !window.confirm("确定取消这个任务？正在执行的工作将停止。")) return;
+      button.disabled = true;
+      try {
+        await api(`/v1/runs/${encodeURIComponent(runId)}:cancel`, { method: "POST" });
+        await selectRun(runId);
+        notice("取消请求已提交；状态更新可能稍有延迟。");
+      } catch (error) { notice(error.message, true); }
+      finally { button.disabled = false; }
+    }
+
     function renderArtifacts(artifacts) {
       const result = $("results");
       const interactions = $("interactions");
@@ -265,7 +396,7 @@
       const version = ++requestVersion;
       selectedRun = id;
       $("run-id").value = id;
-      for (const section of ["overview", "results", "interactions", "events"]) {
+      for (const section of ["overview", "run-actions", "results", "interactions", "events"]) {
         $(section).replaceChildren(node("p", "empty", "正在读取…"));
       }
       notice(`正在读取 Run ${id}…`);
@@ -277,13 +408,14 @@
         ]);
         if (version !== requestVersion) return;
         renderOverview(run);
+        renderActions(run);
         renderEvents(events);
         renderArtifacts(artifacts);
         document.querySelectorAll(".run-button").forEach((button) => button.classList.toggle("active", button.textContent.includes(id)));
         notice(`已加载 Run ${id}；点击产物可查看详情或下载。`);
       } catch (error) {
         if (version !== requestVersion) return;
-        for (const section of ["overview", "results", "interactions", "events"]) {
+        for (const section of ["overview", "run-actions", "results", "interactions", "events"]) {
           $(section).replaceChildren(node("p", "empty", "读取失败，请检查 Run ID 或重试。"));
         }
         notice(error.message, true);
@@ -305,10 +437,84 @@
       finally { $("connect").disabled = false; }
     }
 
+    async function createRun(event) {
+      event.preventDefault();
+      if (!apiToken) { notice("请先输入 API Token 并点击“连接 / 刷新”。", true); return; }
+      if (!$("create-form").reportValidity()) return;
+      const repoUrl = $("repo-url").value.trim();
+      if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(repoUrl)) {
+        notice("仓库地址必须是 https://github.com/owner/repo 格式。", true);
+        return;
+      }
+      const requirement = $("requirement").value.trim();
+      if (!requirement) { notice("请填写修复要求。", true); return; }
+      const criteria = $("acceptance").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (criteria.length > 100 || criteria.some((line) => line.length > 2000)) {
+        notice("验收条件最多 100 条，每条不超过 2000 字。", true);
+        return;
+      }
+      if (!criteria.length && !window.confirm("未填写验收条件，任务会进入需求审批。确定继续？")) return;
+      const approvalMode = $("approval-mode").value;
+      const body = {
+        repository: { url: repoUrl, revision: $("revision").value.trim() || null },
+        requirement,
+        acceptance_criteria: criteria.length ? criteria : null,
+        budget: {
+          max_cost_usd: Number($("max-cost").value),
+          max_wall_time_seconds: Number($("max-wall").value),
+          max_model_calls: Number($("max-calls").value),
+          max_sandbox_seconds: Number($("max-sandbox").value),
+        },
+        risk_level: $("risk-level").value,
+        approval_policy: approvalMode === "custom" ? {
+          mode: "custom",
+          custom: {
+            plan: $("plan-approval").value,
+            execution: $("execution-approval").value,
+            delivery: $("delivery-approval").value,
+          },
+        } : { mode: "risk_based" },
+        dependency_policy: {
+          index_url: "https://pypi.org/simple",
+          allow_lockfile_read: true,
+          allow_cache: true,
+          allow_new_dependencies: $("allow-dependencies").checked,
+        },
+      };
+      const serialized = JSON.stringify(body);
+      if (!pendingCreate || pendingCreate.body !== serialized) {
+        pendingCreate = { body: serialized, key: crypto.randomUUID() };
+      }
+      $("create-run").disabled = true;
+      notice("正在提交新任务…");
+      let created;
+      try {
+        created = await (await api("/v1/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=utf-8", "Idempotency-Key": pendingCreate.key },
+          body: serialized,
+        })).json();
+        pendingCreate = null;
+      } catch (error) {
+        notice(`创建未确认：${error.message}。如果是网络中断，保持表单不变重试会复用同一个幂等键。`, true);
+        $("create-run").disabled = false;
+        return;
+      }
+      $("create-run").disabled = false;
+      await selectRun(created.run_id);
+      notice(`任务已提交，Run ID：${created.run_id}。创建成功不代表修复已经完成。`);
+      try { renderRuns(await json("/v1/runs?limit=50")); } catch (_) { /* new run may not be projected yet */ }
+    }
+
     $("connect").addEventListener("click", connect);
+    $("create-form").addEventListener("submit", createRun);
     $("open-run").addEventListener("click", () => selectRun($("run-id").value));
     $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
     $("run-id").addEventListener("keydown", (event) => { if (event.key === "Enter") selectRun(event.target.value); });
+    $("approval-mode").addEventListener("change", () => {
+      const visible = $("approval-mode").value === "custom";
+      document.querySelectorAll(".custom-approval").forEach((item) => { item.hidden = !visible; });
+    });
   </script>
 </body>
 </html>
