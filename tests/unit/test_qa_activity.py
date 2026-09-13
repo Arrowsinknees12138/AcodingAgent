@@ -3,17 +3,19 @@ import tarfile
 from decimal import Decimal
 from uuid import uuid4
 
-from repopilot.activities.qa import DesignSealedTestsInput, QaActivities
+import pytest
+
+from repopilot.activities.qa import (
+    DesignSealedTestsInput,
+    QaAcceptanceMapping,
+    QaActivities,
+    QaSealedTestDesign,
+    _canonicalize_design,
+)
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, RepositorySnapshot
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.tasks import BudgetInput, TaskSpec
-from repopilot.domain.verification import (
-    AcceptanceTestMapping,
-    SealedTestDesign,
-    SealedTestFile,
-    TestCaseSpec,
-    TestPlan,
-)
+from repopilot.domain.verification import SealedTestFile, TestCaseSpec, TestPlan
 from repopilot.infrastructure.model.fake import FakeModelProvider
 from repopilot.services.model_gateway import BudgetedModelGateway
 from tests.fakes import MemoryArtifactStore, RecordingBudgetStore
@@ -39,7 +41,7 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         repository_url="https://github.com/owner/repo",
         base_revision=base_revision,
         requirement="fix add",
-        acceptance_criteria=("add(1, 2) returns 3",),
+        acceptance_criteria=("add(1, 2) 返回 3",),
         acceptance_criteria_source="structured",
         policy_profile="default",
         budget=BudgetInput(
@@ -68,7 +70,7 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         snapshot.model_dump_json().encode(),
         metadata,
     )
-    design = SealedTestDesign(
+    design = QaSealedTestDesign(
         files=(
             SealedTestFile(
                 path=".repopilot/sealed_tests/test_add.py",
@@ -82,12 +84,7 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
                 expected_on_base="fail",
             ),
         ),
-        acceptance_mapping=(
-            AcceptanceTestMapping(
-                acceptance_criterion="add(1, 2) returns 3",
-                test_names=("test_add",),
-            ),
-        ),
+        acceptance_mapping=(QaAcceptanceMapping(criterion_index=0, test_names=("test_add",)),),
     )
     provider = FakeModelProvider([design], store)
     qa = QaActivities(
@@ -113,6 +110,7 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
     plan = TestPlan.model_validate_json(await store.get_bytes(plan_ref, caller))
     assert plan.origin == "sealed"
     assert plan.cases[0].name == "test_add"
+    assert plan.acceptance_mapping[0].acceptance_criterion == "add(1, 2) 返回 3"
     bundle = await store.get_bytes(plan.test_bundle_ref, caller)
     with tarfile.open(fileobj=io.BytesIO(bundle), mode="r:gz") as archive:
         assert archive.getnames() == [".repopilot/sealed_tests/test_add.py"]
@@ -121,3 +119,62 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         assert b"assert 1 + 2 == 3" in extracted.read()
     assert len(provider.requests) == 1
     assert len(budget.settled) == 1
+
+
+def _task_with_criteria(criteria: tuple[str, ...]) -> TaskSpec:
+    return TaskSpec(
+        task_id=uuid4(),
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        repository_url="https://github.com/owner/repo",
+        base_revision="a" * 40,
+        requirement="fix add",
+        acceptance_criteria=criteria,
+        acceptance_criteria_source="structured",
+        policy_profile="default",
+        budget=BudgetInput(
+            max_cost_usd=Decimal("1"),
+            max_wall_time_seconds=600,
+            max_model_calls=5,
+            max_sandbox_seconds=300,
+        ),
+    )
+
+
+def _indexed_design(indices: tuple[int, ...]) -> QaSealedTestDesign:
+    return QaSealedTestDesign(
+        files=(
+            SealedTestFile(
+                path=".repopilot/sealed_tests/test_add.py",
+                content="def test_add():\n    assert 1 + 2 == 3\n",
+            ),
+        ),
+        cases=(TestCaseSpec(name="test_add", purpose="acceptance", expected_on_base="fail"),),
+        acceptance_mapping=tuple(
+            QaAcceptanceMapping(criterion_index=index, test_names=("test_add",))
+            for index in indices
+        ),
+    )
+
+
+def test_qa_maps_indices_back_to_exact_original_criteria() -> None:
+    criteria = ("add(1, 2) 返回 3", "现有测试不得出现新增失败")
+    task = _task_with_criteria(criteria)
+
+    design = _canonicalize_design(_indexed_design((1, 0)), task)
+
+    assert tuple(item.acceptance_criterion for item in design.acceptance_mapping) == criteria
+    assert tuple(item.test_names for item in design.acceptance_mapping) == (
+        ("test_add",),
+        ("test_add",),
+    )
+
+
+@pytest.mark.parametrize("indices", [(0,), (0, 0), (0, 2)])
+def test_qa_rejects_missing_duplicate_or_out_of_range_criterion_indices(
+    indices: tuple[int, ...],
+) -> None:
+    task = _task_with_criteria(("add(1, 2) 返回 3", "现有测试不得出现新增失败"))
+
+    with pytest.raises(ValueError, match="acceptance criterion"):
+        _canonicalize_design(_indexed_design(indices), task)

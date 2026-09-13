@@ -17,7 +17,7 @@ from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
 from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
-from repopilot.activities.qa import QaActivities
+from repopilot.activities.qa import QaAcceptanceMapping, QaActivities, QaSealedTestDesign
 from repopilot.activities.repository import RepositoryActivities
 from repopilot.activities.reviewer import ReviewerActivities
 from repopilot.activities.verification import VerificationActivities
@@ -32,9 +32,7 @@ from repopilot.domain.plans import (
 )
 from repopilot.domain.tasks import BudgetInput, CreateRunRequest, FinalReport, RepositoryInput
 from repopilot.domain.verification import (
-    AcceptanceTestMapping,
     ReviewDecision,
-    SealedTestDesign,
     SealedTestFile,
     TestCaseSpec,
     VerificationReport,
@@ -145,7 +143,7 @@ async def test_real_pipeline_outcomes(
             dependency_edges=(),
             risk_flags=(),
         ),
-        SealedTestDesign(
+        QaSealedTestDesign(
             files=(
                 SealedTestFile(
                     path=".repopilot/sealed_tests/test_acceptance.py",
@@ -163,10 +161,7 @@ async def test_real_pipeline_outcomes(
                 ),
             ),
             acceptance_mapping=(
-                AcceptanceTestMapping(
-                    acceptance_criterion="add(1, 2) returns 3",
-                    test_names=("test_adds_numbers",),
-                ),
+                QaAcceptanceMapping(criterion_index=0, test_names=("test_adds_numbers",)),
             ),
         ),
         DeveloperPatchDesign(
