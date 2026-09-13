@@ -164,6 +164,9 @@ class ReviewFinding(StrictModel):
 
     @model_validator(mode="after")
     def _disposition_matches_category(self) -> ReviewFinding:
+        # Only clearly broken error handling is a blocker; a minor suggestion may be a comment.
+        if self.category == "error_handling":
+            return self
         expected = "block" if self.category in _REVIEW_BLOCK_CATEGORIES else "comment"
         if self.disposition != expected:
             raise ValueError(f"Reviewer category={self.category} 必须使用 disposition={expected}")

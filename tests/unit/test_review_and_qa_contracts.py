@@ -68,6 +68,18 @@ def test_style_and_naming_findings_are_comments_only() -> None:
     assert decision.decision == "approve"
 
 
+def test_minor_error_handling_finding_can_be_a_comment() -> None:
+    finding = ReviewFinding(
+        finding_id=uuid4(),
+        file_path="src/example.py",
+        category="error_handling",
+        disposition="comment",
+        message="Optional improvement to an already handled error path.",
+    )
+    decision = ReviewDecision(decision="approve", findings=(finding,), rationale="No blocker")
+    assert decision.findings[0].disposition == "comment"
+
+
 @pytest.mark.parametrize(
     "category",
     [
