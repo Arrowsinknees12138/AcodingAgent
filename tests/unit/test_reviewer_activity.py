@@ -1,5 +1,9 @@
+import json
 from decimal import Decimal
 from uuid import uuid4
+
+import pytest
+from temporalio.exceptions import ApplicationError
 
 from repopilot.activities.reviewer import ReviewCandidateInput, ReviewerActivities
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata
@@ -16,7 +20,8 @@ from repopilot.services.model_gateway import BudgetedModelGateway
 from tests.fakes import MemoryArtifactStore, RecordingBudgetStore
 
 
-async def test_reviewer_persists_comments_without_blocking_approval() -> None:
+@pytest.mark.parametrize("mode", ["valid", "corrected", "unrepairable"])
+async def test_reviewer_persists_comments_without_blocking_approval(mode: str) -> None:
     store = MemoryArtifactStore()
     tenant_id, run_id = uuid4(), uuid4()
     metadata = ArtifactMetadata(
@@ -95,20 +100,34 @@ async def test_reviewer_persists_comments_without_blocking_approval() -> None:
         ),
         rationale="No blocker found.",
     )
-    provider = FakeModelProvider([expected], store)
-
-    result = await ReviewerActivities(
+    invalid_output = expected.model_dump(mode="json")
+    invalid_output["findings"][0]["disposition"] = "block"
+    outputs = {
+        "valid": [expected],
+        "corrected": [invalid_output, expected],
+        "unrepairable": [invalid_output, invalid_output],
+    }[mode]
+    provider = FakeModelProvider(outputs, store)
+    budget = RecordingBudgetStore()
+    reviewer = ReviewerActivities(
         artifact_store=store,
-        gateway=BudgetedModelGateway(provider, RecordingBudgetStore()),
+        gateway=BudgetedModelGateway(provider, budget),
         model="fake-model",
         reservation_usd=Decimal("0.10"),
-    ).review_candidate(
-        ReviewCandidateInput(
-            task_spec_ref=task_ref,
-            diff_ref=diff_ref,
-            verification_ref=verification_ref,
-        )
     )
+    reviewer_input = ReviewCandidateInput(
+        task_spec_ref=task_ref,
+        diff_ref=diff_ref,
+        verification_ref=verification_ref,
+    )
+    if mode == "unrepairable":
+        with pytest.raises(ApplicationError) as raised:
+            await reviewer.review_candidate(reviewer_input)
+        assert raised.value.type == "REVIEW_INVALID"
+        assert len(provider.requests) == len(budget.settled) == 2
+        return
+
+    result = await reviewer.review_candidate(reviewer_input)
     persisted = ReviewDecision.model_validate_json(
         await store.get_bytes(
             result.review_ref,
@@ -124,3 +143,15 @@ async def test_reviewer_persists_comments_without_blocking_approval() -> None:
     assert result.decision == "approve"
     assert persisted == expected
     assert result.review_ref.kind is ArtifactKind.REVIEW_DECISION
+    assert len(provider.requests) == (2 if mode == "corrected" else 1)
+    assert len(budget.settled) == len(provider.requests)
+    if mode == "corrected":
+        assert provider.requests[0].logical_call_key != provider.requests[1].logical_call_key
+        correction = json.loads(
+            await store.get_bytes(
+                provider.requests[1].messages_ref,
+                ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="test"),
+            )
+        )["messages"][1]["content"]
+        assert "ReviewDecision" in correction["validation_error"]
+        assert "disposition" in correction["invalid_response"]
