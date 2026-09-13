@@ -1,4 +1,5 @@
 import io
+import json
 import tarfile
 from decimal import Decimal
 from uuid import uuid4
@@ -15,7 +16,14 @@ from repopilot.activities.qa import (
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, RepositorySnapshot
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.tasks import BudgetInput, TaskSpec
-from repopilot.domain.verification import SealedTestFile, TestCaseSpec, TestPlan
+from repopilot.domain.verification import (
+    BaselineReport,
+    SealedTestBaselineReport,
+    SealedTestFile,
+    TestCaseSpec,
+    TestPlan,
+    TestSummary,
+)
 from repopilot.infrastructure.model.fake import FakeModelProvider
 from repopilot.services.model_gateway import BudgetedModelGateway
 from tests.fakes import MemoryArtifactStore, RecordingBudgetStore
@@ -70,6 +78,20 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         snapshot.model_dump_json().encode(),
         metadata,
     )
+    details_ref = await store.put_bytes(ArtifactKind.LOG, b"baseline details", metadata)
+    baseline_ref = await store.put_bytes(
+        ArtifactKind.BASELINE_REPORT,
+        BaselineReport(
+            base_revision=base_revision,
+            runnable=True,
+            command=("python", "-m", "pytest"),
+            summary=TestSummary(passed=2, failed=0, skipped=0, failed_test_ids=()),
+            details_ref=details_ref,
+        )
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
     design = QaSealedTestDesign(
         files=(
             SealedTestFile(
@@ -86,7 +108,12 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         ),
         acceptance_mapping=(QaAcceptanceMapping(criterion_index=0, test_names=("test_add",)),),
     )
-    provider = FakeModelProvider([design], store)
+    corrected_design = design.model_copy(
+        update={
+            "cases": (TestCaseSpec(name="test_add", purpose="acceptance", expected_on_base="pass"),)
+        }
+    )
+    provider = FakeModelProvider([design, corrected_design], store)
     qa = QaActivities(
         artifact_store=store,
         gateway=BudgetedModelGateway(provider, budget),
@@ -98,6 +125,7 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         DesignSealedTestsInput(
             task_spec_ref=task_ref,
             repository_snapshot_ref=snapshot_ref,
+            baseline_report_ref=baseline_ref,
         )
     )
 
@@ -117,8 +145,50 @@ async def test_qa_persists_deterministic_sealed_bundle_and_test_plan() -> None:
         extracted = archive.extractfile(archive.getmembers()[0])
         assert extracted is not None
         assert b"assert 1 + 2 == 3" in extracted.read()
-    assert len(provider.requests) == 1
-    assert len(budget.settled) == 1
+    initial_messages = json.loads(await store.get_bytes(provider.requests[0].messages_ref, caller))
+    assert initial_messages["messages"][0]["content"]["existing_test_baseline"]["summary"] == {
+        "passed": 2,
+        "failed": 0,
+        "skipped": 0,
+        "failed_test_ids": [],
+    }
+    assert initial_messages["messages"][0]["content"]["revision_feedback"] is None
+
+    sealed_report_ref = await store.put_bytes(
+        ArtifactKind.SEALED_TEST_BASELINE_REPORT,
+        SealedTestBaselineReport(
+            base_revision=base_revision,
+            valid=False,
+            runnable=True,
+            command=("python", "-m", "pytest", ".repopilot/sealed_tests"),
+            summary=TestSummary(passed=1, failed=0, skipped=0, failed_test_ids=()),
+            case_outcomes={"test_add": "passed"},
+            mismatches=("test_add: expected failed, observed passed",),
+            details_ref=details_ref,
+        )
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
+    revised_ref = await qa.design_sealed_tests(
+        DesignSealedTestsInput(
+            task_spec_ref=task_ref,
+            repository_snapshot_ref=snapshot_ref,
+            baseline_report_ref=baseline_ref,
+            previous_test_plan_ref=plan_ref,
+            sealed_baseline_report_ref=sealed_report_ref,
+            attempt=2,
+        )
+    )
+    revised_plan = TestPlan.model_validate_json(await store.get_bytes(revised_ref, caller))
+    assert revised_plan.cases[0].expected_on_base == "pass"
+    revision_messages = json.loads(await store.get_bytes(provider.requests[1].messages_ref, caller))
+    feedback = revision_messages["messages"][0]["content"]["revision_feedback"]
+    assert feedback["observed_outcomes"] == {"test_add": "passed"}
+    assert feedback["mismatches"] == ["test_add: expected failed, observed passed"]
+    assert "assert 1 + 2 == 3" in feedback["previous_test_files"]["files"][0]["content"]
+    assert len(provider.requests) == 2
+    assert len(budget.settled) == 2
 
 
 def _task_with_criteria(criteria: tuple[str, ...]) -> TaskSpec:

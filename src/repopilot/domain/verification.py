@@ -86,6 +86,8 @@ class BaselineReport(StrictModel):
 class SealedTestBaselineReport(StrictModel):
     base_revision: str
     valid: bool
+    # 旧 Artifact 没有此字段；默认值只用于反序列化历史报告。
+    runnable: bool = True
     command: tuple[str, ...]
     summary: TestSummary
     case_outcomes: dict[str, Literal["passed", "failed", "skipped", "missing"]]

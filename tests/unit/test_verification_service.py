@@ -353,6 +353,7 @@ async def test_sealed_test_baseline_accepts_declared_pass_fail_and_skip() -> Non
     )
 
     assert report.valid is True
+    assert report.runnable is True
     assert report.case_outcomes == {
         "test_existing": "passed",
         "test_reproduces_bug": "failed",
@@ -442,6 +443,7 @@ async def test_sealed_test_baseline_rejects_missing_or_wrong_outcomes() -> None:
     )
 
     assert report.valid is False
+    assert report.runnable is True
     assert report.case_outcomes == {
         "test_should_fail": "passed",
         "test_missing": "missing",

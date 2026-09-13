@@ -298,6 +298,7 @@ class SealedTestBaselineService:
             {
                 "base_revision": snapshot.base_revision,
                 "valid": runnable and not mismatches,
+                "runnable": runnable,
                 "command": (command.executable, *command.args),
                 "summary": summary,
                 "case_outcomes": case_outcomes,

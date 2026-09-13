@@ -32,6 +32,8 @@ class VerifySealedTestsInput(StrictModel):
 class VerifySealedTestsResult(StrictModel):
     report_ref: ArtifactRef
     valid: bool
+    runnable: bool = True
+    mismatch_count: int = 0
 
 
 class VerifyCandidateInput(StrictModel):
@@ -129,7 +131,12 @@ class VerificationActivities:
         report = SealedTestBaselineReport.model_validate_json(
             await self._artifacts.get_bytes(report_ref, caller)
         )
-        return VerifySealedTestsResult(report_ref=report_ref, valid=report.valid)
+        return VerifySealedTestsResult(
+            report_ref=report_ref,
+            valid=report.valid,
+            runnable=report.runnable,
+            mismatch_count=len(report.mismatches),
+        )
 
     @activity.defn(name="verify_candidate")
     async def verify_candidate(self, payload: VerifyCandidateInput) -> VerifyCandidateResult:
