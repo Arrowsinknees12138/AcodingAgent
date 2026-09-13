@@ -16,7 +16,7 @@ from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, Artifac
 from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.tasks import CreateRunRequest
 from repopilot.infrastructure.db.model_budget import PostgresModelBudgetStore
-from repopilot.infrastructure.db.models import Artifact, AuditEvent, IdempotencyKey
+from repopilot.infrastructure.db.models import Artifact, AuditEvent, IdempotencyKey, RunProjection
 from repopilot.infrastructure.temporal.client import (
     start_code_repair_workflow,
     workflow_id_for,
@@ -127,6 +127,26 @@ class PostgresTemporalRunControl(RunControl):
             base_revision=projection.base_revision,
             plan_version=projection.plan_version,
             model_calls=projection.model_calls,
+        )
+
+    async def list_runs(self, limit: int = 50) -> tuple[RunView, ...]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(RunProjection)
+                .where(RunProjection.tenant_id == self._tenant_id)
+                .order_by(RunProjection.created_at.desc(), RunProjection.run_id.desc())
+                .limit(limit)
+            )
+        return tuple(
+            RunView(
+                run_id=row.run_id,
+                workflow_id=row.workflow_id,
+                status=RunStatus(row.status),
+                base_revision=row.base_revision,
+                plan_version=row.plan_version,
+                model_calls=row.model_calls,
+            )
+            for row in rows
         )
 
     async def approve(self, run_id: UUID, approval: ApprovalRequest) -> None:

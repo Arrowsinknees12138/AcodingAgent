@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -55,6 +55,15 @@ async def create_run(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
+
+
+@router.get("", response_model=list[RunView])
+async def list_runs(
+    control: Control,
+    _tenant_id: Authenticated,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> tuple[RunView, ...]:
+    return await control.list_runs(limit)
 
 
 @router.get("/{run_id}", response_model=RunView)
