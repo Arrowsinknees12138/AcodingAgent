@@ -88,6 +88,7 @@ class CodeRepairWorkflowInput(StrictModel):
     planner_agent_mode: bool = False
     investigator_agent_mode: bool = False
     shared_blackboard_enabled: bool = False
+    reviewer_agent_mode: bool = False
     # Old histories keep the original repair allowlist; new runs may request
     # explicitly justified, risk-escalated scope expansion during replanning.
     scope_expansion_enabled: bool = False
@@ -690,12 +691,18 @@ class CodeRepairWorkflow:
             )
         await self._transition(workflow_input, RunStatus.REVIEWING)
         review_result = await workflow.execute_activity_method(
-            ReviewerActivities.review_candidate,
+            (
+                ReviewerActivities.review_candidate_with_agent
+                if workflow_input.reviewer_agent_mode and workflow.patched("reviewer-agent-loop-v1")
+                else ReviewerActivities.review_candidate
+            ),
             ReviewCandidateInput(
                 task_spec_ref=task_spec_ref,
                 diff_ref=diff_ref,
                 verification_ref=verification_result.report_ref,
                 attempt=self._repair_rounds + 1,
+                candidate_source_ref=candidate.source_archive_ref,
+                blackboard_ref=blackboard_ref,
             ),
             task_queue=MODEL_TASK_QUEUE,
             schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,

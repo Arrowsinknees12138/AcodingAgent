@@ -10,9 +10,11 @@ from uuid import uuid4
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from repopilot.agents.loop import AgentLoop
 from repopilot.domain import StrictModel
+from repopilot.domain.agents import AgentExecutionRequest
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, ArtifactRef
-from repopilot.domain.enums import ArtifactKind
+from repopilot.domain.enums import AgentRole, ArtifactKind
 from repopilot.domain.tasks import TaskSpec
 from repopilot.domain.verification import ReviewDecision, VerificationReport
 from repopilot.services.artifact_store import ArtifactStore
@@ -27,6 +29,12 @@ from repopilot.services.model_gateway import (
     ModelTemporarilyUnavailableError,
     build_logical_call_key,
 )
+from repopilot.tools.archive_workspace import ArchiveWorkspaceBackend
+from repopilot.tools.finish import FinishTool
+from repopilot.tools.read_file import ReadFileTool
+from repopilot.tools.registry import ToolContext, ToolRegistry
+from repopilot.tools.search_code import SearchCodeTool
+from repopilot.tools.submit_review import SubmitReviewTool
 
 _MAX_DIFF_BYTES = 5 * 1024 * 1024
 _MAX_REPAIR_RESPONSE_CHARS = 16_000
@@ -38,6 +46,8 @@ class ReviewCandidateInput(StrictModel):
     diff_ref: ArtifactRef
     verification_ref: ArtifactRef
     attempt: int = 1
+    candidate_source_ref: ArtifactRef | None = None
+    blackboard_ref: ArtifactRef | None = None
 
 
 class ReviewCandidateResult(StrictModel):
@@ -58,6 +68,124 @@ class ReviewerActivities:
         self._gateway = gateway
         self._model = model
         self._reservation_usd = reservation_usd
+
+    @activity.defn(name="review_candidate_with_agent")
+    async def review_candidate_with_agent(
+        self, payload: ReviewCandidateInput
+    ) -> ReviewCandidateResult:
+        source_ref = payload.candidate_source_ref
+        if source_ref is None or source_ref.kind is not ArtifactKind.SOURCE_ARCHIVE:
+            raise ApplicationError("Reviewer agent needs candidate source", non_retryable=True)
+        refs = (payload.task_spec_ref, payload.diff_ref, payload.verification_ref, source_ref)
+        first = refs[0]
+        if any(ref.run_id != first.run_id or ref.tenant_id != first.tenant_id for ref in refs):
+            raise ApplicationError("Reviewer input Artifact scope mismatch", non_retryable=True)
+        board_ref = payload.blackboard_ref
+        if board_ref is not None and (
+            board_ref.kind is not ArtifactKind.BLACKBOARD
+            or board_ref.run_id != first.run_id
+            or board_ref.tenant_id != first.tenant_id
+        ):
+            raise ApplicationError("Reviewer blackboard scope mismatch", non_retryable=True)
+        caller = ArtifactCaller(
+            tenant_id=first.tenant_id,
+            run_id=first.run_id,
+            role=None,
+            service="reviewer-agent-context",
+        )
+        task = TaskSpec.model_validate_json(await self._artifacts.get_bytes(first, caller))
+        diff = await self._artifacts.get_bytes(payload.diff_ref, caller)
+        if len(diff) > _MAX_DIFF_BYTES:
+            raise ApplicationError("candidate diff exceeds 5 MiB", non_retryable=True)
+        verification = VerificationReport.model_validate_json(
+            await self._artifacts.get_bytes(payload.verification_ref, caller)
+        )
+        board = (
+            json.loads(await self._artifacts.get_bytes(board_ref, caller))
+            if board_ref is not None
+            else None
+        )
+        backend = ArchiveWorkspaceBackend(
+            archive=await self._artifacts.get_bytes(source_ref, caller),
+            run_id=first.run_id,
+            tenant_id=first.tenant_id,
+            base_revision=verification.candidate_revision,
+            artifact_store=self._artifacts,
+            sandbox=None,
+            dependency_layer_key=None,
+        )
+        metadata = ArtifactMetadata(
+            tenant_id=first.tenant_id,
+            run_id=first.run_id,
+            base_revision=verification.candidate_revision,
+            schema_version="1",
+            input_artifact_ids=(
+                *(ref.artifact_id for ref in refs),
+                *((board_ref.artifact_id,) if board_ref else ()),
+            ),
+        )
+        seed_ref = await self._artifacts.put_bytes(
+            ArtifactKind.TRAJECTORY,
+            json.dumps(
+                {
+                    "task": task.model_dump(mode="json"),
+                    "candidate_diff": diff.decode("utf-8", errors="strict"),
+                    "verification": verification.model_dump(mode="json"),
+                    "blackboard": board,
+                    "repository_paths": backend.paths,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode(),
+            metadata,
+        )
+        submit = SubmitReviewTool()
+        loop = AgentLoop(
+            gateway=self._gateway,
+            artifact_store=self._artifacts,
+            tools=ToolRegistry(
+                (SearchCodeTool(backend), ReadFileTool(backend), submit, FinishTool())
+            ),
+            model=self._model,
+            reservation_usd=self._reservation_usd,
+        )
+        result = await loop.execute(
+            AgentExecutionRequest(
+                role=AgentRole.REVIEWER,
+                work_item_id=task.task_id,
+                input_refs=(seed_ref,),
+                allowed_tools=("search_code", "read_file", "submit_review", "finish"),
+                max_steps=8,
+                remaining_model_calls=8,
+                attempt=payload.attempt,
+                prompt_version="3",
+            ),
+            ToolContext(
+                tenant_id=first.tenant_id,
+                run_id=first.run_id,
+                work_item_id=task.task_id,
+                sandbox_id=None,
+                read_paths=(),
+                write_paths=(),
+                read_all_repository_files=True,
+            ),
+        )
+        if result.status != "succeeded" or submit.review is None:
+            message = result.error.message if result.error else "Reviewer did not submit"
+            raise ApplicationError(message, type="REVIEW_INVALID", non_retryable=True)
+        review_ref = await self._artifacts.put_bytes(
+            ArtifactKind.REVIEW_DECISION,
+            submit.review.model_dump_json().encode(),
+            metadata.model_copy(
+                update={
+                    "input_artifact_ids": (
+                        *metadata.input_artifact_ids,
+                        *((result.trajectory_ref.artifact_id,) if result.trajectory_ref else ()),
+                    )
+                }
+            ),
+        )
+        return ReviewCandidateResult(review_ref=review_ref, decision=submit.review.decision)
 
     @activity.defn(name="review_candidate")
     async def review_candidate(self, payload: ReviewCandidateInput) -> ReviewCandidateResult:

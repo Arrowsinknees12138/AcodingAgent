@@ -51,7 +51,7 @@ _ROLE_TOOLS: dict[AgentRole, frozenset[str]] = {
     AgentRole.DEVELOPER: frozenset(
         {"read_file", "search_code", "write_file", "delete_file", "run_command", "finish"}
     ),
-    AgentRole.REVIEWER: frozenset({"read_file", "finish"}),
+    AgentRole.REVIEWER: frozenset({"read_file", "search_code", "submit_review", "finish"}),
 }
 
 

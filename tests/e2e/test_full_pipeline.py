@@ -256,7 +256,21 @@ async def test_real_pipeline_outcomes(
                 ),
             ]
         )
-    outputs.append(ReviewDecision(decision="approve", findings=(), rationale="all checks pass"))
+    approved_review = ReviewDecision(decision="approve", findings=(), rationale="all checks pass")
+    if agent_mode:
+        outputs.extend(
+            [
+                AgentTurn(tool="search_code", arguments={"query": "def add"}),
+                AgentTurn(tool="read_file", arguments={"path": "calc.py"}),
+                AgentTurn(
+                    tool="submit_review",
+                    arguments={"review": approved_review.model_dump(mode="json")},
+                ),
+                AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+            ]
+        )
+    else:
+        outputs.append(approved_review)
     provider = FakeModelProvider(outputs, artifact_store)
     gateway = BudgetedModelGateway(provider, budget)
     model_args = {
@@ -350,6 +364,7 @@ async def test_real_pipeline_outcomes(
                         **model_args, sandbox_service=sandbox
                     ).develop_patch_with_agent,
                     ReviewerActivities(**model_args).review_candidate,
+                    ReviewerActivities(**model_args).review_candidate_with_agent,
                 ],
             ),
         )
@@ -363,6 +378,7 @@ async def test_real_pipeline_outcomes(
                     developer_agent_mode=agent_mode,
                     planner_agent_mode=agent_mode,
                     shared_blackboard_enabled=agent_mode,
+                    reviewer_agent_mode=agent_mode,
                 ),
                 id=workflow_id_for(tenant_id, run_id),
                 task_queue=ORCHESTRATION_TASK_QUEUE,
@@ -407,7 +423,7 @@ async def test_real_pipeline_outcomes(
         assert report.cleanup_report_ref is not None
         return
     assert report.changed_paths == ("calc.py",)
-    assert report.model_calls == (11 if agent_mode else (6 if requires_repair else 4))
+    assert report.model_calls == (14 if agent_mode else (6 if requires_repair else 4))
     assert report.repair_rounds == (1 if requires_repair else 0)
     assert report.patch_ref is not None
     caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="e2e")

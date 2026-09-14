@@ -41,7 +41,7 @@ _ROLE_MODEL_CALL_LIMIT = {
     AgentRole.INVESTIGATOR: 8,
     AgentRole.QA: 5,
     AgentRole.DEVELOPER: 10,
-    AgentRole.REVIEWER: 3,
+    AgentRole.REVIEWER: 8,
 }
 
 
@@ -316,6 +316,7 @@ def _load_prompt(role: AgentRole, version: str = "1") -> str:
     if version != "1" and (role, version) not in {
         (AgentRole.DEVELOPER, "2"),
         (AgentRole.PLANNER, "2"),
+        (AgentRole.REVIEWER, "3"),
     }:
         raise ValueError(f"unsupported agent prompt version: {role.value}/{version}")
     return (

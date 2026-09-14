@@ -11,4 +11,4 @@
 | P1 | Scope Expansion 协议 | 已实现，待环境验证 | 新 Run 的 repair 可提出最多 3 个新路径，须说明理由；自动提升至至少 Medium 并重走计划审批；旧 Run 保持原 allowlist。单元测试通过，Docker E2E 待验证 |
 | P1 | Investigator Agent | 已实现，待环境验证 | repair 前只读全仓 search/read，提交含根因、文件行证据、建议路径的独立调查产物；Planner/Developer 共享其结论，密封测试原始日志不暴露。单元测试通过，Docker E2E 待验证 |
 | P1 | Shared Blackboard | 已实现，待环境验证 | 不可变、带来源引用的安全摘要依次汇总计划/失败反馈/调查结论；Planner、Investigator、Developer 读取同一版本链；不共享密封测试源码或原始日志。单元测试通过，Docker E2E 待验证 |
-| P2 | Reviewer Agent 化 | 待完成 | |
+| P2 | Reviewer Agent 化 | 已实现，待环境验证 | 新 Run 的 Reviewer 只读搜索/读取候选仓库并 submit_review；沿用严格 BLOCK/COMMENT 契约与预算限制，旧 Run 保持原 Activity。单元测试通过，Docker E2E 待验证 |

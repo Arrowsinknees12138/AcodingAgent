@@ -222,6 +222,7 @@ async def _run_model_worker() -> None:
             developer.develop_patch,
             developer.develop_patch_with_agent,
             reviewer.review_candidate,
+            reviewer.review_candidate_with_agent,
         ],
     )
     get_logger(component="worker", queue="model").info(

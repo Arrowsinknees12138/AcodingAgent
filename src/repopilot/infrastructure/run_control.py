@@ -90,6 +90,7 @@ class PostgresTemporalRunControl(RunControl):
             planner_agent_mode=True,
             investigator_agent_mode=True,
             shared_blackboard_enabled=True,
+            reviewer_agent_mode=True,
             scope_expansion_enabled=True,
         )
         try:

@@ -1,4 +1,6 @@
+import io
 import json
+import tarfile
 from decimal import Decimal
 from uuid import uuid4
 
@@ -6,7 +8,9 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from repopilot.activities.reviewer import ReviewCandidateInput, ReviewerActivities
+from repopilot.domain.agents import AgentTurn
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata
+from repopilot.domain.blackboard import BlackboardState
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.tasks import BudgetInput, TaskSpec
 from repopilot.domain.verification import (
@@ -155,3 +159,94 @@ async def test_reviewer_persists_comments_without_blocking_approval(mode: str) -
         )["messages"][1]["content"]
         assert "ReviewDecision" in correction["validation_error"]
         assert "disposition" in correction["invalid_response"]
+
+
+async def test_reviewer_agent_reads_candidate_and_submits_review() -> None:
+    store = MemoryArtifactStore()
+    tenant_id, run_id = uuid4(), uuid4()
+    metadata = ArtifactMetadata(
+        tenant_id=tenant_id, run_id=run_id, base_revision="b" * 40, schema_version="1"
+    )
+    task = TaskSpec(
+        task_id=uuid4(),
+        run_id=run_id,
+        tenant_id=tenant_id,
+        repository_url="https://github.com/owner/repo",
+        base_revision="a" * 40,
+        requirement="fix addition",
+        acceptance_criteria=("add(1, 2) returns 3",),
+        acceptance_criteria_source="structured",
+        policy_profile="default",
+        budget=BudgetInput(
+            max_cost_usd=Decimal("1"),
+            max_wall_time_seconds=600,
+            max_model_calls=10,
+            max_sandbox_seconds=300,
+        ),
+    )
+    task_ref = await store.put_bytes(
+        ArtifactKind.TASK_SPEC, task.model_dump_json().encode(), metadata
+    )
+    diff_ref = await store.put_bytes(ArtifactKind.PATCH, b"+    return a + b\n", metadata)
+    log_ref = await store.put_bytes(ArtifactKind.LOG, b"ok", metadata)
+    baseline_ref = await store.put_bytes(ArtifactKind.BASELINE_REPORT, b"{}", metadata)
+    verification_ref = await store.put_bytes(
+        ArtifactKind.VERIFICATION_REPORT,
+        VerificationReport(
+            candidate_revision="b" * 40,
+            baseline_report_ref=baseline_ref,
+            passed=True,
+            findings=(),
+            baseline_summary=TestSummary(passed=0, failed=0, skipped=0, failed_test_ids=()),
+            candidate_summary=TestSummary(passed=1, failed=0, skipped=0, failed_test_ids=()),
+            regression_test_ids=(),
+            regression_count=0,
+            stdout_ref=log_ref,
+        )
+        .model_dump_json()
+        .encode(),
+        metadata,
+    )
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        source = b"def add(a, b):\n    return a + b\n"
+        member = tarfile.TarInfo("calc.py")
+        member.size = len(source)
+        archive.addfile(member, io.BytesIO(source))
+    source_ref = await store.put_bytes(
+        ArtifactKind.SOURCE_ARCHIVE, archive_buffer.getvalue(), metadata
+    )
+    board_ref = await store.put_bytes(
+        ArtifactKind.BLACKBOARD, BlackboardState(entries=()).model_dump_json().encode(), metadata
+    )
+    approved = ReviewDecision(decision="approve", findings=(), rationale="No blocker")
+    provider = FakeModelProvider(
+        [
+            AgentTurn(tool="search_code", arguments={"query": "def add"}),
+            AgentTurn(tool="read_file", arguments={"path": "calc.py"}),
+            AgentTurn(tool="submit_review", arguments={"review": approved.model_dump(mode="json")}),
+            AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+        ],
+        store,
+    )
+    result = await ReviewerActivities(
+        artifact_store=store,
+        gateway=BudgetedModelGateway(provider, RecordingBudgetStore()),
+        model="fake-model",
+        reservation_usd=Decimal("0.10"),
+    ).review_candidate_with_agent(
+        ReviewCandidateInput(
+            task_spec_ref=task_ref,
+            diff_ref=diff_ref,
+            verification_ref=verification_ref,
+            candidate_source_ref=source_ref,
+            blackboard_ref=board_ref,
+        )
+    )
+    caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="test")
+    assert (
+        ReviewDecision.model_validate_json(await store.get_bytes(result.review_ref, caller))
+        == approved
+    )
+    assert result.decision == "approve"
+    assert len(provider.requests) == 4
