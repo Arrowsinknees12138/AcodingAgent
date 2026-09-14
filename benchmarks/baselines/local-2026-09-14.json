@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-14T12:00:16.071655+00:00",
+  "scenarios": [
+    {
+      "id": "simple_fix",
+      "description": "One-shot fix succeeds",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[False-False-False-False-False]",
+      "test_status": "passed",
+      "test_duration_seconds": 26.48,
+      "failure": null,
+      "metrics": {
+        "final_status": "succeeded",
+        "model_calls": 4,
+        "input_tokens": 40,
+        "output_tokens": 20,
+        "model_cost_usd": 0.004,
+        "sandbox_seconds": 9.007,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 20.0,
+        "repair_rounds": 0,
+        "changed_paths_count": 1,
+        "developer_agent_mode": "False"
+      }
+    },
+    {
+      "id": "repair_loop",
+      "description": "Failed candidate is repaired",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[True-False-False-False-False]",
+      "test_status": "passed",
+      "test_duration_seconds": 31.151,
+      "failure": null,
+      "metrics": {
+        "final_status": "succeeded",
+        "model_calls": 6,
+        "input_tokens": 60,
+        "output_tokens": 30,
+        "model_cost_usd": 0.006,
+        "sandbox_seconds": 14.241,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 30.0,
+        "repair_rounds": 1,
+        "changed_paths_count": 1,
+        "developer_agent_mode": "False"
+      }
+    },
+    {
+      "id": "budget_exhaustion",
+      "description": "Budget limit terminates safely",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[False-True-False-False-False]",
+      "test_status": "passed",
+      "test_duration_seconds": 13.528,
+      "failure": null,
+      "metrics": {
+        "final_status": "failed",
+        "model_calls": 2,
+        "input_tokens": 20,
+        "output_tokens": 10,
+        "model_cost_usd": 0.002,
+        "sandbox_seconds": 5.177,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 12.0,
+        "repair_rounds": 0,
+        "changed_paths_count": 0,
+        "developer_agent_mode": "False"
+      }
+    },
+    {
+      "id": "preexisting_failure",
+      "description": "Pre-existing failure is classified",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[False-False-True-False-False]",
+      "test_status": "passed",
+      "test_duration_seconds": 24.201,
+      "failure": null,
+      "metrics": {
+        "final_status": "succeeded",
+        "model_calls": 4,
+        "input_tokens": 40,
+        "output_tokens": 20,
+        "model_cost_usd": 0.004,
+        "sandbox_seconds": 11.42,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 23.0,
+        "repair_rounds": 0,
+        "changed_paths_count": 1,
+        "developer_agent_mode": "False"
+      }
+    },
+    {
+      "id": "unauthorized_edit",
+      "description": "Out-of-scope edit is rejected",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[False-False-False-True-False]",
+      "test_status": "passed",
+      "test_duration_seconds": 13.667,
+      "failure": null,
+      "metrics": {
+        "final_status": "failed",
+        "model_calls": 3,
+        "input_tokens": 30,
+        "output_tokens": 15,
+        "model_cost_usd": 0.003,
+        "sandbox_seconds": 5.265,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 12.0,
+        "repair_rounds": 0,
+        "changed_paths_count": 0,
+        "developer_agent_mode": "False"
+      }
+    },
+    {
+      "id": "multi_agent_pipeline",
+      "description": "Planner, Developer, and Reviewer AgentLoops with shared blackboard succeed",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[False-False-False-False-True]",
+      "test_status": "passed",
+      "test_duration_seconds": 28.986,
+      "failure": null,
+      "metrics": {
+        "final_status": "succeeded",
+        "model_calls": 14,
+        "input_tokens": 140,
+        "output_tokens": 70,
+        "model_cost_usd": 0.014,
+        "sandbox_seconds": 12.702,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 28.0,
+        "repair_rounds": 0,
+        "changed_paths_count": 1,
+        "developer_agent_mode": "True"
+      }
+    },
+    {
+      "id": "agent_repair",
+      "description": "Investigator diagnoses a failed candidate and agents repair it",
+      "node_id": "tests.e2e.test_full_pipeline::test_real_pipeline_outcomes[True-False-False-False-True]",
+      "test_status": "passed",
+      "test_duration_seconds": 46.142,
+      "failure": null,
+      "metrics": {
+        "final_status": "succeeded",
+        "model_calls": 27,
+        "input_tokens": 270,
+        "output_tokens": 135,
+        "model_cost_usd": 0.027,
+        "sandbox_seconds": 20.955,
+        "reported_sandbox_seconds": "0",
+        "duration_seconds": 44.0,
+        "repair_rounds": 1,
+        "changed_paths_count": 1,
+        "developer_agent_mode": "True"
+      }
+    }
+  ],
+  "summary": {
+    "total": 7,
+    "passed": 7,
+    "failed": 0,
+    "skipped": 0,
+    "missing": 0,
+    "success_rate": 1.0,
+    "mean_test_duration_seconds": 26.307857142857145,
+    "p95_test_duration_seconds": 46.142,
+    "total_model_calls": 60,
+    "total_model_cost_usd": 0.06,
+    "total_sandbox_seconds": 78.767
+  }
+}

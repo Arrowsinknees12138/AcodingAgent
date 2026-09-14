@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from uuid import uuid4
 
 from repopilot.agents.loop import AgentLoop
 from repopilot.domain.agents import AgentExecutionRequest, AgentTurn
-from repopilot.domain.artifacts import ArtifactMetadata
+from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata
 from repopilot.domain.enums import AgentRole, ArtifactKind
 from repopilot.domain.errors import ErrorCode
 from repopilot.infrastructure.model.fake import FakeModelProvider
@@ -67,6 +68,9 @@ async def test_fake_model_completes_developer_agent_and_settles_budget() -> None
     assert budget.settled == list(result.model_call_ids)
     assert provider.requests[0].system_prompt.startswith("---")
     assert any(ref.kind == ArtifactKind.TRAJECTORY for ref in store.refs)
+    caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="test")
+    trajectory = json.loads(await store.get_bytes(provider.requests[0].messages_ref, caller))
+    assert "finish" in trajectory["messages"][-1]["content"]["allowed_tool_argument_schemas"]
 
 
 async def test_invalid_model_outputs_are_billed_and_stop_after_two() -> None:

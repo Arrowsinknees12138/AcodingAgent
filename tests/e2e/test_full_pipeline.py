@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -16,6 +16,7 @@ from repopilot.activities.blackboard import BlackboardActivities
 from repopilot.activities.developer import DeveloperActivities
 from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
+from repopilot.activities.investigator import InvestigatorActivities
 from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import QaAcceptanceMapping, QaActivities, QaSealedTestDesign
@@ -26,6 +27,7 @@ from repopilot.domain.agents import AgentTurn
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata
 from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.errors import ErrorCode
+from repopilot.domain.investigation import InvestigationEvidence, InvestigationReport
 from repopilot.domain.plans import (
     ChangePlan,
     DeveloperFileEdit,
@@ -47,6 +49,7 @@ from repopilot.infrastructure.sandbox.docker import DockerSandboxService
 from repopilot.infrastructure.temporal.client import workflow_id_for
 from repopilot.infrastructure.temporal.converter import data_converter
 from repopilot.services.model_gateway import BudgetedModelGateway
+from repopilot.services.sandbox_service import CommandResult, RunCommandRequest
 from repopilot.services.task_queues import (
     MODEL_TASK_QUEUE,
     ORCHESTRATION_TASK_QUEUE,
@@ -90,6 +93,7 @@ class LocalOriginRepository(GitRepositoryService):
         (False, False, True, False, False),
         (False, False, False, True, False),
         (False, False, False, False, True),
+        (True, False, False, False, True),
     ],
 )
 async def test_real_pipeline_outcomes(
@@ -134,6 +138,16 @@ async def test_real_pipeline_outcomes(
         artifact_store=artifact_store,
         tenant_id=tenant_id,
     )
+    sandbox_duration_ms = 0
+    original_execute = sandbox.execute
+
+    async def tracked_execute(sandbox_id: UUID, command: RunCommandRequest) -> CommandResult:
+        nonlocal sandbox_duration_ms
+        result = await original_execute(sandbox_id, command)
+        sandbox_duration_ms += result.duration_ms
+        return result
+
+    sandbox.execute = tracked_execute  # type: ignore[method-assign]
     budget = PostgresModelBudgetStore(sessions)
     plan_id = uuid4()
     initial_plan = ChangePlan(
@@ -193,7 +207,14 @@ async def test_real_pipeline_outcomes(
                 AgentTurn(tool="read_file", arguments={"path": "tests/test_base.py"}),
                 AgentTurn(
                     tool="write_file",
-                    arguments={"path": "calc.py", "content": "def add(a, b):\n    return a + b\n"},
+                    arguments={
+                        "path": "calc.py",
+                        "content": (
+                            "def add(a, b):\n    return a * b\n"
+                            if requires_repair
+                            else "def add(a, b):\n    return a + b\n"
+                        ),
+                    },
                 ),
                 AgentTurn(
                     tool="run_command",
@@ -225,37 +246,86 @@ async def test_real_pipeline_outcomes(
             )
         )
     if requires_repair:
-        outputs.extend(
-            [
-                ChangePlan(
-                    plan_id=uuid4(),
-                    version=2,
-                    supersedes_plan_id=plan_id,
-                    files=(
-                        PlannedFileChange(
-                            work_item_id=uuid4(),
-                            path="calc.py",
-                            operation="modify",
-                            owner="developer-1",
-                            responsibility="correct failed acceptance test",
-                            required_interfaces=(),
-                        ),
-                    ),
-                    dependency_edges=(),
-                    risk_flags=(),
+        repair_plan = ChangePlan(
+            plan_id=uuid4(),
+            version=2,
+            supersedes_plan_id=plan_id,
+            files=(
+                PlannedFileChange(
+                    work_item_id=uuid4(),
+                    path="calc.py",
+                    operation="modify",
+                    owner="developer-1",
+                    responsibility="correct failed acceptance test",
+                    required_interfaces=(),
                 ),
-                DeveloperPatchDesign(
-                    edits=(
-                        DeveloperFileEdit(
-                            path="calc.py",
-                            operation="modify",
-                            content="def add(a, b):\n    return a + b\n",
-                        ),
-                    ),
-                    rationale="repair failed acceptance test",
-                ),
-            ]
+            ),
+            dependency_edges=(),
+            risk_flags=(),
         )
+        if agent_mode:
+            investigation = InvestigationReport(
+                root_cause="The current add implementation multiplies instead of adding",
+                evidence=(
+                    InvestigationEvidence(path="calc.py", line=2, observation="return a * b"),
+                ),
+                suggested_paths=("calc.py",),
+                recommendation="Replace multiplication with addition",
+                confidence=0.95,
+            )
+            outputs.extend(
+                [
+                    AgentTurn(tool="search_code", arguments={"query": "def add"}),
+                    AgentTurn(tool="read_file", arguments={"path": "calc.py"}),
+                    AgentTurn(
+                        tool="submit_investigation",
+                        arguments={"report": investigation.model_dump(mode="json")},
+                    ),
+                    AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+                    AgentTurn(tool="search_code", arguments={"query": "def add"}),
+                    AgentTurn(tool="read_file", arguments={"path": "calc.py"}),
+                    AgentTurn(
+                        tool="submit_plan",
+                        arguments={"plan": repair_plan.model_dump(mode="json")},
+                    ),
+                    AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+                    AgentTurn(tool="search_code", arguments={"query": "def add"}),
+                    AgentTurn(tool="read_file", arguments={"path": "calc.py"}),
+                    AgentTurn(
+                        tool="write_file",
+                        arguments={
+                            "path": "calc.py",
+                            "content": "def add(a, b):\n    return a + b\n",
+                        },
+                    ),
+                    AgentTurn(
+                        tool="run_command",
+                        arguments={
+                            "executable": "pytest",
+                            "args": ["-q"],
+                            "cwd": ".",
+                            "timeout_seconds": 120,
+                        },
+                    ),
+                    AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+                ]
+            )
+        else:
+            outputs.extend(
+                [
+                    repair_plan,
+                    DeveloperPatchDesign(
+                        edits=(
+                            DeveloperFileEdit(
+                                path="calc.py",
+                                operation="modify",
+                                content="def add(a, b):\n    return a + b\n",
+                            ),
+                        ),
+                        rationale="repair failed acceptance test",
+                    ),
+                ]
+            )
     approved_review = ReviewDecision(decision="approve", findings=(), rationale="all checks pass")
     if agent_mode:
         outputs.extend(
@@ -295,7 +365,7 @@ async def test_real_pipeline_outcomes(
         budget=BudgetInput(
             max_cost_usd=Decimal("1"),
             max_wall_time_seconds=1800,
-            max_model_calls=2 if budget_exhausted else 10,
+            max_model_calls=2 if budget_exhausted else (50 if agent_mode else 10),
             max_sandbox_seconds=1800,
         ),
     )
@@ -310,7 +380,7 @@ async def test_real_pipeline_outcomes(
         run_id=run_id,
         tenant_id=tenant_id,
         max_cost_usd=Decimal("1"),
-        max_model_calls=2 if budget_exhausted else 10,
+        max_model_calls=2 if budget_exhausted else (50 if agent_mode else 10),
     )
     repository_activities = RepositoryActivities(
         artifact_store=artifact_store, repository=repository
@@ -357,6 +427,7 @@ async def test_real_pipeline_outcomes(
                 activities=[
                     PlanningActivities(**model_args).plan_change,
                     PlanningActivities(**model_args).plan_change_with_agent,
+                    InvestigatorActivities(**model_args).investigate_failure,
                     BlackboardActivities(artifact_store=artifact_store).publish_blackboard,
                     QaActivities(**model_args).design_sealed_tests,
                     DeveloperActivities(**model_args).develop_patch,
@@ -379,6 +450,7 @@ async def test_real_pipeline_outcomes(
                     planner_agent_mode=agent_mode,
                     shared_blackboard_enabled=agent_mode,
                     reviewer_agent_mode=agent_mode,
+                    investigator_agent_mode=agent_mode,
                 ),
                 id=workflow_id_for(tenant_id, run_id),
                 task_queue=ORCHESTRATION_TASK_QUEUE,
@@ -401,7 +473,8 @@ async def test_real_pipeline_outcomes(
     record_property("input_tokens", report.input_tokens)
     record_property("output_tokens", report.output_tokens)
     record_property("model_cost_usd", str(report.model_cost_usd))
-    record_property("sandbox_seconds", report.sandbox_seconds)
+    record_property("sandbox_seconds", sandbox_duration_ms / 1_000)
+    record_property("reported_sandbox_seconds", report.sandbox_seconds)
     record_property("duration_seconds", report.duration_seconds)
     record_property("repair_rounds", report.repair_rounds)
     record_property("changed_paths_count", len(report.changed_paths))
@@ -423,7 +496,9 @@ async def test_real_pipeline_outcomes(
         assert report.cleanup_report_ref is not None
         return
     assert report.changed_paths == ("calc.py",)
-    assert report.model_calls == (14 if agent_mode else (6 if requires_repair else 4))
+    assert report.model_calls == (
+        27 if agent_mode and requires_repair else 14 if agent_mode else 6 if requires_repair else 4
+    )
     assert report.repair_rounds == (1 if requires_repair else 0)
     assert report.patch_ref is not None
     caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="e2e")

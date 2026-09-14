@@ -69,6 +69,13 @@ class ToolRegistry:
         if denied:
             raise ToolNotAllowedError(f"{role.value} 角色不能使用: {', '.join(sorted(denied))}")
 
+    def input_schemas(
+        self, role: AgentRole, requested: tuple[str, ...]
+    ) -> dict[str, dict[str, object]]:
+        """Expose exact argument contracts to a tool-calling model."""
+        self.validate_requested_tools(role, requested)
+        return {name: self._tools[name].input_model.model_json_schema() for name in requested}
+
     async def execute(
         self,
         *,

@@ -67,6 +67,19 @@ class AgentLoop:
         self._validate_context(request, tool_context)
         self._tools.validate_requested_tools(request.role, request.allowed_tools)
         messages = await self._load_inputs(request)
+        messages.append(
+            {
+                "role": "user",
+                "content": {
+                    "allowed_tool_argument_schemas": self._tools.input_schemas(
+                        request.role, request.allowed_tools
+                    ),
+                    "instruction": (
+                        "Choose one allowed tool per turn and match its arguments schema."
+                    ),
+                },
+            }
+        )
         prompt = _load_prompt(request.role, request.prompt_version)
         call_limit = min(
             request.remaining_model_calls,

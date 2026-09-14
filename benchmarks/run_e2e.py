@@ -152,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
                 "pytest",
                 str(TEST_FILE),
                 f"--junitxml={junit}",
+                "-o",
+                "junit_family=xunit1",
                 "-q",
             ]
             completed = subprocess.run(command, cwd=ROOT, check=False)  # noqa: S603
