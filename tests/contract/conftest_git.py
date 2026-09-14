@@ -33,6 +33,29 @@ def run_git(args: list[str], cwd: Path) -> str:
     return result.stdout
 
 
+def run_git_bytes(args: list[str], cwd: Path) -> bytes:
+    """Capture patch-producing Git output without Windows newline translation."""
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        check=False,
+        env={
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@localhost",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@localhost",
+            "PATH": os.environ.get("PATH", ""),
+        },
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git {args} failed: {result.stdout!r}\n{result.stderr!r}"
+        )
+    return result.stdout
+
+
 def init_origin_repo(path: Path) -> str:
     """创建一个包含两个 Python 文件的普通（非 bare）仓库，返回初始 commit 的 SHA。"""
     path.mkdir(parents=True, exist_ok=True)
@@ -75,7 +98,7 @@ def make_patch(
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
 
-    diff_text = run_git(["diff", "--no-color", "HEAD"], cwd=origin_path)
+    diff_bytes = run_git_bytes(["diff", "--no-color", "HEAD"], cwd=origin_path)
     run_git(["checkout", "--", "."], cwd=origin_path)
     run_git(["clean", "-fd"], cwd=origin_path)
-    return diff_text.encode("utf-8"), touched_paths
+    return diff_bytes, touched_paths
