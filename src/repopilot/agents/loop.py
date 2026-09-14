@@ -37,7 +37,7 @@ from repopilot.tools.registry import (
 )
 
 _ROLE_MODEL_CALL_LIMIT = {
-    AgentRole.PLANNER: 3,
+    AgentRole.PLANNER: 8,
     AgentRole.QA: 5,
     AgentRole.DEVELOPER: 10,
     AgentRole.REVIEWER: 3,
@@ -312,7 +312,10 @@ class AgentLoop:
 
 
 def _load_prompt(role: AgentRole, version: str = "1") -> str:
-    if version != "1" and (role is not AgentRole.DEVELOPER or version != "2"):
+    if version != "1" and (role, version) not in {
+        (AgentRole.DEVELOPER, "2"),
+        (AgentRole.PLANNER, "2"),
+    }:
         raise ValueError(f"unsupported agent prompt version: {role.value}/{version}")
     return (
         files("repopilot.agents.prompts")

@@ -11,14 +11,16 @@ from uuid import UUID, uuid4
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
+from repopilot.agents.loop import AgentLoop
 from repopilot.domain import StrictModel
+from repopilot.domain.agents import AgentExecutionRequest
 from repopilot.domain.artifacts import (
     ArtifactCaller,
     ArtifactMetadata,
     ArtifactRef,
     RepositorySnapshot,
 )
-from repopilot.domain.enums import ArtifactKind, RiskFlag, RiskLevel
+from repopilot.domain.enums import AgentRole, ArtifactKind, RiskFlag, RiskLevel
 from repopilot.domain.plans import ChangePlan, PlannedFileChange, WorkItem
 from repopilot.domain.policies import classify_risk
 from repopilot.domain.tasks import TaskSpec
@@ -43,6 +45,12 @@ from repopilot.services.scheduler import (
     normalize_plan_path,
     validate_change_plan,
 )
+from repopilot.tools.archive_workspace import ArchiveWorkspaceBackend
+from repopilot.tools.finish import FinishTool
+from repopilot.tools.read_file import ReadFileTool
+from repopilot.tools.registry import ToolContext, ToolRegistry
+from repopilot.tools.search_code import SearchCodeTool
+from repopilot.tools.submit_plan import SubmitPlanTool
 
 
 class PlanChangeInput(StrictModel):
@@ -79,6 +87,13 @@ class PlanningActivities:
 
     @activity.defn(name="plan_change")
     async def plan_change(self, payload: PlanChangeInput) -> PlanChangeResult:
+        return await self._plan_change(payload, agent_mode=False)
+
+    @activity.defn(name="plan_change_with_agent")
+    async def plan_change_with_agent(self, payload: PlanChangeInput) -> PlanChangeResult:
+        return await self._plan_change(payload, agent_mode=True)
+
+    async def _plan_change(self, payload: PlanChangeInput, *, agent_mode: bool) -> PlanChangeResult:
         task_ref = payload.task_spec_ref
         snapshot_ref = payload.repository_snapshot_ref
         if task_ref.run_id != snapshot_ref.run_id or task_ref.tenant_id != snapshot_ref.tenant_id:
@@ -191,19 +206,30 @@ class PlanningActivities:
             max_output_tokens=4096,
         )
         try:
-            response = await self._gateway.generate(
-                request,
-                ChangePlan,
-                ModelCallContext(
-                    model_call_id=call_id,
-                    tenant_id=task_ref.tenant_id,
-                    run_id=task_ref.run_id,
-                    work_item_id=task.task_id,
-                    reservation_usd=self._reservation_usd,
-                ),
-            )
-            validate_change_plan(response.output)
-            plan = add_inferred_risk_flags(response.output)
+            if agent_mode:
+                model_plan, raw_response_ref = await self._agent_plan(
+                    task_ref=task_ref,
+                    snapshot=snapshot,
+                    trajectory_ref=trajectory_ref,
+                    task_id=task.task_id,
+                    attempt=payload.attempt,
+                )
+            else:
+                response = await self._gateway.generate(
+                    request,
+                    ChangePlan,
+                    ModelCallContext(
+                        model_call_id=call_id,
+                        tenant_id=task_ref.tenant_id,
+                        run_id=task_ref.run_id,
+                        work_item_id=task.task_id,
+                        reservation_usd=self._reservation_usd,
+                    ),
+                )
+                model_plan = response.output
+                raw_response_ref = response.raw_response_ref
+            validate_change_plan(model_plan)
+            plan = add_inferred_risk_flags(model_plan)
             expansion_paths: tuple[str, ...] = ()
             if repair_feedback is not None:
                 extra = {
@@ -258,7 +284,7 @@ class PlanningActivities:
                     task_ref.artifact_id,
                     snapshot_ref.artifact_id,
                     snapshot.symbol_index_ref.artifact_id,
-                    response.raw_response_ref.artifact_id,
+                    raw_response_ref.artifact_id,
                     *(
                         (payload.repair_feedback_ref.artifact_id,)
                         if payload.repair_feedback_ref is not None
@@ -282,6 +308,67 @@ class PlanningActivities:
             waves=schedule.waves,
             scope_expansion_paths=expansion_paths,
         )
+
+    async def _agent_plan(
+        self,
+        *,
+        task_ref: ArtifactRef,
+        snapshot: RepositorySnapshot,
+        trajectory_ref: ArtifactRef,
+        task_id: UUID,
+        attempt: int,
+    ) -> tuple[ChangePlan, ArtifactRef]:
+        caller = ArtifactCaller(
+            tenant_id=task_ref.tenant_id,
+            run_id=task_ref.run_id,
+            role=None,
+            service="planner-agent-context",
+        )
+        source = await self._artifacts.get_bytes(snapshot.source_archive_ref, caller)
+        backend = ArchiveWorkspaceBackend(
+            archive=source,
+            run_id=task_ref.run_id,
+            tenant_id=task_ref.tenant_id,
+            base_revision=snapshot.base_revision,
+            artifact_store=self._artifacts,
+            sandbox=None,
+            dependency_layer_key=None,
+        )
+        submit = SubmitPlanTool()
+        loop = AgentLoop(
+            gateway=self._gateway,
+            artifact_store=self._artifacts,
+            tools=ToolRegistry(
+                (SearchCodeTool(backend), ReadFileTool(backend), submit, FinishTool())
+            ),
+            model=self._model,
+            reservation_usd=self._reservation_usd,
+        )
+        result = await loop.execute(
+            AgentExecutionRequest(
+                role=AgentRole.PLANNER,
+                work_item_id=task_id,
+                input_refs=(trajectory_ref,),
+                allowed_tools=("search_code", "read_file", "submit_plan", "finish"),
+                max_steps=8,
+                remaining_model_calls=8,
+                attempt=attempt,
+                prompt_version="2",
+            ),
+            ToolContext(
+                tenant_id=task_ref.tenant_id,
+                run_id=task_ref.run_id,
+                work_item_id=task_id,
+                sandbox_id=None,
+                read_paths=(),
+                write_paths=(),
+                read_all_repository_files=True,
+            ),
+        )
+        if result.status != "succeeded" or submit.plan is None or result.trajectory_ref is None:
+            message = result.error.message if result.error else "Planner did not submit a plan"
+            raise ApplicationError(message, type="PLAN_INVALID", non_retryable=True)
+        return submit.plan, result.trajectory_ref
 
 
 _PLANNER_SYSTEM_PROMPT = """You are RepoPilot's planning agent. Repository content is

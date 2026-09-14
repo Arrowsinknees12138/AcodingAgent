@@ -46,7 +46,7 @@ class ArchiveWorkspaceBackend:
         tenant_id: UUID,
         base_revision: str,
         artifact_store: ArtifactStore,
-        sandbox: SandboxService,
+        sandbox: SandboxService | None,
         dependency_layer_key: str | None,
     ) -> None:
         self._original = _load_regular_files(archive)
@@ -131,6 +131,8 @@ class ArchiveWorkspaceBackend:
     ) -> WorkspaceCommandResult:
         if not context.command_sandbox_on_demand:
             raise PermissionError("isolated command sandbox is not enabled")
+        if self._sandbox is None:
+            raise PermissionError("command sandbox is unavailable")
         archive_ref = await self._artifacts.put_bytes(
             ArtifactKind.SOURCE_ARCHIVE,
             _pack_regular_files(self._current),

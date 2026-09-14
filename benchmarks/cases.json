@@ -6,6 +6,6 @@
     {"id": "budget_exhaustion", "pytest_name": "test_real_pipeline_outcomes[False-True-False-False-False]", "description": "Budget limit terminates safely"},
     {"id": "preexisting_failure", "pytest_name": "test_real_pipeline_outcomes[False-False-True-False-False]", "description": "Pre-existing failure is classified"},
     {"id": "unauthorized_edit", "pytest_name": "test_real_pipeline_outcomes[False-False-False-True-False]", "description": "Out-of-scope edit is rejected"},
-    {"id": "developer_agent", "pytest_name": "test_real_pipeline_outcomes[False-False-False-False-True]", "description": "Developer search/read/write/test/finish loop succeeds"}
+    {"id": "planner_developer_agents", "pytest_name": "test_real_pipeline_outcomes[False-False-False-False-True]", "description": "Planner search/read/submit and Developer search/read/write/test loops succeed"}
   ]
 }

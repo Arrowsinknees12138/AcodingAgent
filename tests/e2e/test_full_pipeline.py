@@ -135,24 +135,24 @@ async def test_real_pipeline_outcomes(
     )
     budget = PostgresModelBudgetStore(sessions)
     plan_id = uuid4()
-    outputs = [
-        ChangePlan(
-            plan_id=plan_id,
-            version=1,
-            supersedes_plan_id=None,
-            files=(
-                PlannedFileChange(
-                    work_item_id=item_id,
-                    path="calc.py",
-                    operation="modify",
-                    owner="developer-1",
-                    responsibility="fix addition",
-                    required_interfaces=(),
-                ),
+    initial_plan = ChangePlan(
+        plan_id=plan_id,
+        version=1,
+        supersedes_plan_id=None,
+        files=(
+            PlannedFileChange(
+                work_item_id=item_id,
+                path="calc.py",
+                operation="modify",
+                owner="developer-1",
+                responsibility="fix addition",
+                required_interfaces=(),
             ),
-            dependency_edges=(),
-            risk_flags=(),
         ),
+        dependency_edges=(),
+        risk_flags=(),
+    )
+    outputs = [
         QaSealedTestDesign(
             files=(
                 SealedTestFile(
@@ -175,6 +175,16 @@ async def test_real_pipeline_outcomes(
             ),
         ),
     ]
+    if agent_mode:
+        outputs = [
+            AgentTurn(tool="search_code", arguments={"query": "def add"}),
+            AgentTurn(tool="read_file", arguments={"path": "calc.py"}),
+            AgentTurn(tool="submit_plan", arguments={"plan": initial_plan.model_dump(mode="json")}),
+            AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+            *outputs,
+        ]
+    else:
+        outputs.insert(0, initial_plan)
     if agent_mode:
         outputs.extend(
             [
@@ -331,6 +341,7 @@ async def test_real_pipeline_outcomes(
                 task_queue=MODEL_TASK_QUEUE,
                 activities=[
                     PlanningActivities(**model_args).plan_change,
+                    PlanningActivities(**model_args).plan_change_with_agent,
                     QaActivities(**model_args).design_sealed_tests,
                     DeveloperActivities(**model_args).develop_patch,
                     DeveloperActivities(
@@ -348,6 +359,7 @@ async def test_real_pipeline_outcomes(
                     tenant_id=tenant_id,
                     create_request_ref=request_ref,
                     developer_agent_mode=agent_mode,
+                    planner_agent_mode=agent_mode,
                 ),
                 id=workflow_id_for(tenant_id, run_id),
                 task_queue=ORCHESTRATION_TASK_QUEUE,
@@ -392,7 +404,7 @@ async def test_real_pipeline_outcomes(
         assert report.cleanup_report_ref is not None
         return
     assert report.changed_paths == ("calc.py",)
-    assert report.model_calls == (8 if agent_mode else (6 if requires_repair else 4))
+    assert report.model_calls == (11 if agent_mode else (6 if requires_repair else 4))
     assert report.repair_rounds == (1 if requires_repair else 0)
     assert report.patch_ref is not None
     caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="e2e")

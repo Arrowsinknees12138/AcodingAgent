@@ -83,6 +83,7 @@ class CodeRepairWorkflowInput(StrictModel):
     approval_policy: ApprovalPolicy = ApprovalPolicy()
     # Old workflow histories keep the one-shot Developer Activity during replay.
     developer_agent_mode: bool = False
+    planner_agent_mode: bool = False
     # Old histories keep the original repair allowlist; new runs may request
     # explicitly justified, risk-escalated scope expansion during replanning.
     scope_expansion_enabled: bool = False
@@ -196,8 +197,15 @@ class CodeRepairWorkflow:
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
             await self._transition(workflow_input, RunStatus.PLANNING)
+            planner_agent_mode = workflow_input.planner_agent_mode and workflow.patched(
+                "planner-agent-loop-v1"
+            )
             planning_result = await workflow.execute_activity_method(
-                PlanningActivities.plan_change,
+                (
+                    PlanningActivities.plan_change_with_agent
+                    if planner_agent_mode
+                    else PlanningActivities.plan_change
+                ),
                 PlanChangeInput(
                     task_spec_ref=task_spec_ref,
                     repository_snapshot_ref=snapshot_ref,
@@ -346,7 +354,11 @@ class CodeRepairWorkflow:
                 )
                 await self._transition(workflow_input, RunStatus.PLANNING)
                 planning_result = await workflow.execute_activity_method(
-                    PlanningActivities.plan_change,
+                    (
+                        PlanningActivities.plan_change_with_agent
+                        if planner_agent_mode
+                        else PlanningActivities.plan_change
+                    ),
                     PlanChangeInput(
                         task_spec_ref=task_spec_ref,
                         repository_snapshot_ref=current_snapshot_ref,

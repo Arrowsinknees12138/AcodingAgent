@@ -7,6 +7,7 @@ import pytest
 from temporalio.exceptions import ApplicationError
 
 from repopilot.activities.planning import PlanChangeInput, PlanningActivities
+from repopilot.domain.agents import AgentTurn
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, RepositorySnapshot
 from repopilot.domain.enums import ArtifactKind, RiskFlag
 from repopilot.domain.plans import ChangePlan, PlannedFileChange
@@ -168,6 +169,26 @@ async def test_planner_produces_validated_change_plan_artifact() -> None:
         store.content[ref.artifact_id] for ref in store.refs if ref.kind is ArtifactKind.TRAJECTORY
     ]
     assert b"SEALED TEST SOURCE SECRET" not in trajectories[-1]
+
+    agent_provider = FakeModelProvider(
+        [
+            AgentTurn(tool="search_code", arguments={"query": "broken"}),
+            AgentTurn(tool="read_file", arguments={"path": "src/app.py"}),
+            AgentTurn(tool="submit_plan", arguments={"plan": expected.model_dump(mode="json")}),
+            AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+        ],
+        store,
+    )
+    agent_result = await PlanningActivities(
+        artifact_store=store,
+        gateway=BudgetedModelGateway(agent_provider, RecordingBudgetStore()),
+        model="fake-model",
+        reservation_usd=Decimal("0.10"),
+    ).plan_change_with_agent(
+        PlanChangeInput(task_spec_ref=task_ref, repository_snapshot_ref=candidate_snapshot_ref)
+    )
+    assert agent_result.planned_files == expected.files
+    assert len(agent_provider.requests) == 4
 
     with pytest.raises(ApplicationError, match="PLAN_INVALID"):
         await PlanningActivities(

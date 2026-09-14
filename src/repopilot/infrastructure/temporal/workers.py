@@ -206,6 +206,7 @@ async def _run_model_worker() -> None:
         task_queue=MODEL_TASK_QUEUE,
         activities=[
             planning.plan_change,
+            planning.plan_change_with_agent,
             qa.design_sealed_tests,
             developer.develop_patch,
             developer.develop_patch_with_agent,
