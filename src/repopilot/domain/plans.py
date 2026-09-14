@@ -34,6 +34,8 @@ class ChangePlan(StrictModel):
     files: tuple[PlannedFileChange, ...]
     dependency_edges: tuple[tuple[UUID, UUID], ...]
     risk_flags: tuple[RiskFlag, ...]
+    # Required when a repair proposes paths outside the previously approved scope.
+    scope_expansion_reason: str | None = Field(default=None, max_length=2_000)
 
 
 class WorkItem(StrictModel):

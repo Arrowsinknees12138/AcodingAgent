@@ -18,7 +18,7 @@ from repopilot.domain.artifacts import (
     ArtifactRef,
     RepositorySnapshot,
 )
-from repopilot.domain.enums import ArtifactKind, RiskLevel
+from repopilot.domain.enums import ArtifactKind, RiskFlag, RiskLevel
 from repopilot.domain.plans import ChangePlan, PlannedFileChange, WorkItem
 from repopilot.domain.policies import classify_risk
 from repopilot.domain.tasks import TaskSpec
@@ -51,6 +51,7 @@ class PlanChangeInput(StrictModel):
     attempt: int = 1
     repair_feedback_ref: ArtifactRef | None = None
     allowed_repair_paths: tuple[str, ...] = ()
+    allow_scope_expansion: bool = False
 
 
 class PlanChangeResult(StrictModel):
@@ -59,6 +60,7 @@ class PlanChangeResult(StrictModel):
     planned_files: tuple[PlannedFileChange, ...]
     work_items: tuple[WorkItem, ...]
     waves: tuple[tuple[UUID, ...], ...]
+    scope_expansion_paths: tuple[str, ...] = ()
 
 
 class PlanningActivities:
@@ -128,6 +130,7 @@ class PlanningActivities:
                         "symbol_index": json.loads(symbol_content),
                         "repair_feedback": repair_feedback,
                         "repair_allowed_paths": sorted(allowed_paths),
+                        "scope_expansion_allowed": payload.allow_scope_expansion,
                         "repair_existing_paths": sorted(existing_paths.intersection(allowed_paths)),
                         "constraints": {
                             "max_changed_files": 20,
@@ -201,11 +204,33 @@ class PlanningActivities:
             )
             validate_change_plan(response.output)
             plan = add_inferred_risk_flags(response.output)
+            expansion_paths: tuple[str, ...] = ()
             if repair_feedback is not None:
+                extra = {
+                    normalize_plan_path(file.path)
+                    for file in plan.files
+                    if normalize_plan_path(file.path) not in allowed_paths
+                }
+                if extra:
+                    if not payload.allow_scope_expansion:
+                        raise InvalidPlanError("repair path outside original plan")
+                    if len(extra) > 3:
+                        raise InvalidPlanError("one repair may expand scope by at most 3 files")
+                    if not (plan.scope_expansion_reason or "").strip():
+                        raise InvalidPlanError("scope expansion requires a concrete reason")
+                    expansion_paths = tuple(sorted(extra))
+                    plan = plan.model_copy(
+                        update={
+                            "risk_flags": tuple(
+                                sorted(
+                                    {*plan.risk_flags, RiskFlag.LARGE_SCOPE},
+                                    key=lambda flag: flag.value,
+                                )
+                            )
+                        }
+                    )
                 for file in plan.files:
                     path = normalize_plan_path(file.path)
-                    if path not in allowed_paths:
-                        raise InvalidPlanError(f"repair path outside original plan: {path}")
                     if file.operation == "create" and path in existing_paths:
                         raise InvalidPlanError(f"repair create target already exists: {path}")
                     if file.operation in {"modify", "delete"} and path not in existing_paths:
@@ -255,6 +280,7 @@ class PlanningActivities:
             planned_files=plan.files,
             work_items=work_items,
             waves=schedule.waves,
+            scope_expansion_paths=expansion_paths,
         )
 
 
@@ -264,8 +290,10 @@ object matching the supplied schema. Keep scope minimal, use repository-relative
 assign exactly one owner and work_item_id to each path, create an acyclic dependency graph,
 and report all applicable risk_flags. Do not add dependencies unless the task explicitly
 requires it. In repair mode, use only repair_allowed_paths, the current file existence,
-and summarized findings; choose the smallest relevant subset. Never ask for sealed test
-source or raw logs."""
+and summarized findings; choose the smallest relevant subset. When
+scope_expansion_allowed is true, you may add at most three task-relevant files beyond
+repair_allowed_paths, but must give a concrete scope_expansion_reason. Such a change
+requires renewed approval. Never ask for sealed test source or raw logs."""
 
 
 def _archive_file_paths(source: bytes) -> frozenset[str]:

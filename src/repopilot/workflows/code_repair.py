@@ -83,6 +83,9 @@ class CodeRepairWorkflowInput(StrictModel):
     approval_policy: ApprovalPolicy = ApprovalPolicy()
     # Old workflow histories keep the one-shot Developer Activity during replay.
     developer_agent_mode: bool = False
+    # Old histories keep the original repair allowlist; new runs may request
+    # explicitly justified, risk-escalated scope expansion during replanning.
+    scope_expansion_enabled: bool = False
     # Temporal 输入会保存在不可变 History 中；保留旧字段兼容已经启动的 Run。
     # 新调用方不应再传它。False 等价于额外要求 delivery 人工审批。
     auto_approve_low_risk: bool | None = None
@@ -350,6 +353,7 @@ class CodeRepairWorkflow:
                         attempt=self._repair_rounds + 1,
                         repair_feedback_ref=repair_feedback_ref,
                         allowed_repair_paths=original_allowed_paths,
+                        allow_scope_expansion=workflow_input.scope_expansion_enabled,
                     ),
                     task_queue=MODEL_TASK_QUEUE,
                     schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
@@ -388,6 +392,10 @@ class CodeRepairWorkflow:
                                 ErrorCode.APPROVAL_REJECTED, "repair execution rejected"
                             ),
                         )
+                if planning_result.scope_expansion_paths:
+                    original_allowed_paths = tuple(
+                        sorted(set(original_allowed_paths).union(planning_result.scope_expansion_paths))
+                    )
                 await self._transition(workflow_input, RunStatus.EXECUTING)
 
             if approval_stages.delivery is ApprovalMode.AUTOMATIC:

@@ -8,7 +8,7 @@ from temporalio.exceptions import ApplicationError
 
 from repopilot.activities.planning import PlanChangeInput, PlanningActivities
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, RepositorySnapshot
-from repopilot.domain.enums import ArtifactKind
+from repopilot.domain.enums import ArtifactKind, RiskFlag
 from repopilot.domain.plans import ChangePlan, PlannedFileChange
 from repopilot.domain.tasks import BudgetInput, TaskSpec
 from repopilot.domain.verification import TestSummary, VerificationReport
@@ -198,5 +198,62 @@ async def test_planner_produces_validated_change_plan_artifact() -> None:
                 attempt=3,
                 repair_feedback_ref=feedback_ref,
                 allowed_repair_paths=("src/app.py",),
+            )
+        )
+
+    expanded = expected.model_copy(
+        update={
+            "files": (
+                *expected.files,
+                expected.files[0].model_copy(
+                    update={"path": "src/new.py", "operation": "create"}
+                ),
+            ),
+            "scope_expansion_reason": "The repair requires a helper absent from the first plan",
+        }
+    )
+    expanded_planner = PlanningActivities(
+        artifact_store=store,
+        gateway=BudgetedModelGateway(FakeModelProvider([expanded], store), RecordingBudgetStore()),
+        model="fake-model",
+        reservation_usd=Decimal("0.10"),
+    )
+    expanded_result = await expanded_planner.plan_change(
+        PlanChangeInput(
+            task_spec_ref=task_ref,
+            repository_snapshot_ref=candidate_snapshot_ref,
+            attempt=3,
+            repair_feedback_ref=feedback_ref,
+            allowed_repair_paths=("src/app.py",),
+            allow_scope_expansion=True,
+        )
+    )
+    assert expanded_result.scope_expansion_paths == ("src/new.py",)
+    assert expanded_result.risk_level.value == "medium"
+    stored_plan = ChangePlan.model_validate_json(
+        await store.get_bytes(expanded_result.plan_ref, caller)
+    )
+    assert RiskFlag.LARGE_SCOPE in stored_plan.risk_flags
+    assert stored_plan.scope_expansion_reason == expanded.scope_expansion_reason
+
+    with pytest.raises(ApplicationError, match="PLAN_INVALID"):
+        await PlanningActivities(
+            artifact_store=store,
+            gateway=BudgetedModelGateway(
+                FakeModelProvider(
+                    [expanded.model_copy(update={"scope_expansion_reason": None})], store
+                ),
+                RecordingBudgetStore(),
+            ),
+            model="fake-model",
+            reservation_usd=Decimal("0.10"),
+        ).plan_change(
+            PlanChangeInput(
+                task_spec_ref=task_ref,
+                repository_snapshot_ref=candidate_snapshot_ref,
+                attempt=3,
+                repair_feedback_ref=feedback_ref,
+                allowed_repair_paths=("src/app.py",),
+                allow_scope_expansion=True,
             )
         )
