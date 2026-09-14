@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {"id": "simple_fix", "pytest_name": "test_real_pipeline_outcomes[False-False-False-False-False]", "description": "One-shot fix succeeds"},
+    {"id": "repair_loop", "pytest_name": "test_real_pipeline_outcomes[True-False-False-False-False]", "description": "Failed candidate is repaired"},
+    {"id": "budget_exhaustion", "pytest_name": "test_real_pipeline_outcomes[False-True-False-False-False]", "description": "Budget limit terminates safely"},
+    {"id": "preexisting_failure", "pytest_name": "test_real_pipeline_outcomes[False-False-True-False-False]", "description": "Pre-existing failure is classified"},
+    {"id": "unauthorized_edit", "pytest_name": "test_real_pipeline_outcomes[False-False-False-True-False]", "description": "Out-of-scope edit is rejected"},
+    {"id": "developer_agent", "pytest_name": "test_real_pipeline_outcomes[False-False-False-False-True]", "description": "Developer search/read/write/test/finish loop succeeds"}
+  ]
+}

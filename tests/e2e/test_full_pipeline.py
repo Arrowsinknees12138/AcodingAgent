@@ -21,6 +21,7 @@ from repopilot.activities.qa import QaAcceptanceMapping, QaActivities, QaSealedT
 from repopilot.activities.repository import RepositoryActivities
 from repopilot.activities.reviewer import ReviewerActivities
 from repopilot.activities.verification import VerificationActivities
+from repopilot.domain.agents import AgentTurn
 from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata
 from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.errors import ErrorCode
@@ -74,13 +75,20 @@ class LocalOriginRepository(GitRepositoryService):
 
 
 @pytest.mark.parametrize(
-    ("requires_repair", "budget_exhausted", "preexisting_failure", "unauthorized_edit"),
+    (
+        "requires_repair",
+        "budget_exhausted",
+        "preexisting_failure",
+        "unauthorized_edit",
+        "agent_mode",
+    ),
     [
-        (False, False, False, False),
-        (True, False, False, False),
-        (False, True, False, False),
-        (False, False, True, False),
-        (False, False, False, True),
+        (False, False, False, False, False),
+        (True, False, False, False, False),
+        (False, True, False, False, False),
+        (False, False, True, False, False),
+        (False, False, False, True, False),
+        (False, False, False, False, True),
     ],
 )
 async def test_real_pipeline_outcomes(
@@ -91,6 +99,8 @@ async def test_real_pipeline_outcomes(
     budget_exhausted: bool,
     preexisting_failure: bool,
     unauthorized_edit: bool,
+    agent_mode: bool,
+    record_property,
 ) -> None:
     origin = tmp_path / "origin"
     origin.mkdir()
@@ -164,21 +174,45 @@ async def test_real_pipeline_outcomes(
                 QaAcceptanceMapping(criterion_index=0, test_names=("test_adds_numbers",)),
             ),
         ),
-        DeveloperPatchDesign(
-            edits=(
-                DeveloperFileEdit(
-                    path="pyproject.toml" if unauthorized_edit else "calc.py",
-                    operation="modify",
-                    content=(
-                        "def add(a, b):\n    return a * b\n"
-                        if requires_repair
-                        else "def add(a, b):\n    return a + b\n"
+    ]
+    if agent_mode:
+        outputs.extend(
+            [
+                AgentTurn(tool="search_code", arguments={"query": "def add"}),
+                AgentTurn(tool="read_file", arguments={"path": "tests/test_base.py"}),
+                AgentTurn(
+                    tool="write_file",
+                    arguments={"path": "calc.py", "content": "def add(a, b):\n    return a + b\n"},
+                ),
+                AgentTurn(
+                    tool="run_command",
+                    arguments={
+                        "executable": "pytest",
+                        "args": ["-q"],
+                        "cwd": ".",
+                        "timeout_seconds": 120,
+                    },
+                ),
+                AgentTurn(tool="finish", arguments={"status": "succeeded"}),
+            ]
+        )
+    else:
+        outputs.append(
+            DeveloperPatchDesign(
+                edits=(
+                    DeveloperFileEdit(
+                        path="pyproject.toml" if unauthorized_edit else "calc.py",
+                        operation="modify",
+                        content=(
+                            "def add(a, b):\n    return a * b\n"
+                            if requires_repair
+                            else "def add(a, b):\n    return a + b\n"
+                        ),
                     ),
                 ),
-            ),
-            rationale="fix arithmetic",
-        ),
-    ]
+                rationale="fix arithmetic",
+            )
+        )
     if requires_repair:
         outputs.extend(
             [
@@ -299,6 +333,9 @@ async def test_real_pipeline_outcomes(
                     PlanningActivities(**model_args).plan_change,
                     QaActivities(**model_args).design_sealed_tests,
                     DeveloperActivities(**model_args).develop_patch,
+                    DeveloperActivities(
+                        **model_args, sandbox_service=sandbox
+                    ).develop_patch_with_agent,
                     ReviewerActivities(**model_args).review_candidate,
                 ],
             ),
@@ -310,6 +347,7 @@ async def test_real_pipeline_outcomes(
                     run_id=run_id,
                     tenant_id=tenant_id,
                     create_request_ref=request_ref,
+                    developer_agent_mode=agent_mode,
                 ),
                 id=workflow_id_for(tenant_id, run_id),
                 task_queue=ORCHESTRATION_TASK_QUEUE,
@@ -327,6 +365,16 @@ async def test_real_pipeline_outcomes(
             ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="e2e"),
         )
     )
+    record_property("final_status", result.status.value)
+    record_property("model_calls", report.model_calls)
+    record_property("input_tokens", report.input_tokens)
+    record_property("output_tokens", report.output_tokens)
+    record_property("model_cost_usd", str(report.model_cost_usd))
+    record_property("sandbox_seconds", report.sandbox_seconds)
+    record_property("duration_seconds", report.duration_seconds)
+    record_property("repair_rounds", report.repair_rounds)
+    record_property("changed_paths_count", len(report.changed_paths))
+    record_property("developer_agent_mode", agent_mode)
     assert report.base_revision == base_revision
     if budget_exhausted:
         assert result.failure is not None
@@ -344,7 +392,7 @@ async def test_real_pipeline_outcomes(
         assert report.cleanup_report_ref is not None
         return
     assert report.changed_paths == ("calc.py",)
-    assert report.model_calls == (6 if requires_repair else 4)
+    assert report.model_calls == (8 if agent_mode else (6 if requires_repair else 4))
     assert report.repair_rounds == (1 if requires_repair else 0)
     assert report.patch_ref is not None
     caller = ArtifactCaller(tenant_id=tenant_id, run_id=run_id, role=None, service="e2e")
