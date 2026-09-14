@@ -26,7 +26,7 @@ from repopilot.domain.enums import AgentRole, ArtifactKind
 # 不受此表限制，因为它们是产生/搬运 Artifact 内容的一方。
 _AGENT_READABLE_KINDS: dict[ArtifactKind, frozenset[AgentRole]] = {
     ArtifactKind.REPOSITORY_SNAPSHOT: frozenset(
-        {AgentRole.PLANNER, AgentRole.QA, AgentRole.DEVELOPER}
+        {AgentRole.PLANNER, AgentRole.QA, AgentRole.DEVELOPER, AgentRole.INVESTIGATOR}
     ),
     ArtifactKind.SOURCE_ARCHIVE: frozenset({AgentRole.DEVELOPER}),
     ArtifactKind.CHANGE_PLAN: frozenset(
@@ -36,6 +36,9 @@ _AGENT_READABLE_KINDS: dict[ArtifactKind, frozenset[AgentRole]] = {
     ArtifactKind.PATCH: frozenset({AgentRole.QA, AgentRole.DEVELOPER, AgentRole.REVIEWER}),
     ArtifactKind.VERIFICATION_REPORT: frozenset(
         {AgentRole.QA, AgentRole.DEVELOPER, AgentRole.REVIEWER}
+    ),
+    ArtifactKind.INVESTIGATION: frozenset(
+        {AgentRole.PLANNER, AgentRole.DEVELOPER, AgentRole.REVIEWER}
     ),
 }
 

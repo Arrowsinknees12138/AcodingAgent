@@ -26,6 +26,7 @@ from repopilot.activities.developer import (
 )
 from repopilot.activities.finalization import BuildFinalReportInput, FinalizationActivities
 from repopilot.activities.ingest import FinalizeTaskSpecInput, IngestActivities
+from repopilot.activities.investigator import InvestigateInput, InvestigatorActivities
 from repopilot.activities.planning import PlanChangeInput, PlanChangeResult, PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import DesignSealedTestsInput, QaActivities
@@ -84,6 +85,7 @@ class CodeRepairWorkflowInput(StrictModel):
     # Old workflow histories keep the one-shot Developer Activity during replay.
     developer_agent_mode: bool = False
     planner_agent_mode: bool = False
+    investigator_agent_mode: bool = False
     # Old histories keep the original repair allowlist; new runs may request
     # explicitly justified, risk-escalated scope expansion during replanning.
     scope_expansion_enabled: bool = False
@@ -307,6 +309,7 @@ class CodeRepairWorkflow:
             original_allowed_paths = tuple(file.path for file in planning_result.planned_files)
             highest_planned_risk = planning_result.risk_level
             repair_feedback_ref: ArtifactRef | None = None
+            investigation_ref: ArtifactRef | None = None
             while True:
                 attempt = await self._run_candidate_attempt(
                     workflow_input=workflow_input,
@@ -317,6 +320,7 @@ class CodeRepairWorkflow:
                     dependency_layer_key=dependency_result.dependency_layer_key,
                     plan=planning_result,
                     repair_feedback_ref=repair_feedback_ref,
+                    investigation_ref=investigation_ref,
                 )
                 if attempt.verification_passed and attempt.review_decision == "approve":
                     break
@@ -352,6 +356,22 @@ class CodeRepairWorkflow:
                     start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
                     retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
                 )
+                if workflow_input.investigator_agent_mode and workflow.patched(
+                    "investigator-agent-v1"
+                ):
+                    investigation_ref = await workflow.execute_activity_method(
+                        InvestigatorActivities.investigate_failure,
+                        InvestigateInput(
+                            task_spec_ref=task_spec_ref,
+                            repository_snapshot_ref=current_snapshot_ref,
+                            repair_feedback_ref=repair_feedback_ref,
+                            attempt=self._repair_rounds + 1,
+                        ),
+                        task_queue=MODEL_TASK_QUEUE,
+                        schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+                        start_to_close_timeout=_MODEL_START_TO_CLOSE,
+                        retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+                    )
                 await self._transition(workflow_input, RunStatus.PLANNING)
                 planning_result = await workflow.execute_activity_method(
                     (
@@ -366,6 +386,7 @@ class CodeRepairWorkflow:
                         repair_feedback_ref=repair_feedback_ref,
                         allowed_repair_paths=original_allowed_paths,
                         allow_scope_expansion=workflow_input.scope_expansion_enabled,
+                        investigation_ref=investigation_ref,
                     ),
                     task_queue=MODEL_TASK_QUEUE,
                     schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
@@ -406,7 +427,9 @@ class CodeRepairWorkflow:
                         )
                 if planning_result.scope_expansion_paths:
                     original_allowed_paths = tuple(
-                        sorted(set(original_allowed_paths).union(planning_result.scope_expansion_paths))
+                        sorted(
+                            set(original_allowed_paths).union(planning_result.scope_expansion_paths)
+                        )
                     )
                 await self._transition(workflow_input, RunStatus.EXECUTING)
 
@@ -487,6 +510,7 @@ class CodeRepairWorkflow:
         dependency_layer_key: str,
         plan: PlanChangeResult,
         repair_feedback_ref: ArtifactRef | None,
+        investigation_ref: ArtifactRef | None,
     ) -> CandidateAttemptResult:
         agent_mode = workflow_input.developer_agent_mode and workflow.patched(
             "developer-agent-loop-v1"
@@ -526,6 +550,7 @@ class CodeRepairWorkflow:
                             task_spec_ref=task_spec_ref,
                             planned_files=tuple(planned_files[item_id]),
                             repair_feedback_ref=repair_feedback_ref,
+                            investigation_ref=investigation_ref,
                             dependency_layer_key=dependency_layer_key,
                         ),
                         task_queue=MODEL_TASK_QUEUE,

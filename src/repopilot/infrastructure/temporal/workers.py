@@ -16,6 +16,7 @@ from temporalio.worker import Worker
 from repopilot.activities.developer import DeveloperActivities
 from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
+from repopilot.activities.investigator import InvestigatorActivities
 from repopilot.activities.planning import PlanningActivities
 from repopilot.activities.projections import ProjectionActivities
 from repopilot.activities.qa import QaActivities
@@ -176,6 +177,12 @@ async def _run_model_worker() -> None:
         model=settings.model_name,
         reservation_usd=settings.model_reservation_usd,
     )
+    investigator = InvestigatorActivities(
+        artifact_store=artifacts,
+        gateway=gateway,
+        model=settings.model_name,
+        reservation_usd=settings.model_reservation_usd,
+    )
     qa = QaActivities(
         artifact_store=artifacts,
         gateway=gateway,
@@ -207,6 +214,7 @@ async def _run_model_worker() -> None:
         activities=[
             planning.plan_change,
             planning.plan_change_with_agent,
+            investigator.investigate_failure,
             qa.design_sealed_tests,
             developer.develop_patch,
             developer.develop_patch_with_agent,

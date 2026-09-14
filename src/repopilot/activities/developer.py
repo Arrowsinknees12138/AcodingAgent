@@ -64,6 +64,7 @@ class DevelopPatchInput(StrictModel):
 
 class DevelopAgentPatchInput(DevelopPatchInput):
     dependency_layer_key: str | None = None
+    investigation_ref: ArtifactRef | None = None
 
 
 class DeveloperActivities:
@@ -136,6 +137,17 @@ class DeveloperActivities:
             for ref in context.upstream_interface_refs
         ]
         repair_feedback: dict[str, object] | None = None
+        investigation: dict[str, object] | None = None
+        if payload.investigation_ref is not None:
+            investigation_ref = payload.investigation_ref
+            if (
+                investigation_ref.kind is not ArtifactKind.INVESTIGATION
+                or investigation_ref.run_id != context_ref.run_id
+                or investigation_ref.tenant_id != context_ref.tenant_id
+                or context.work_item.kind != "repair"
+            ):
+                raise ApplicationError("Developer investigation scope mismatch", non_retryable=True)
+            investigation = json.loads(await self._artifacts.get_bytes(investigation_ref, caller))
         if payload.repair_feedback_ref is not None:
             feedback_ref = payload.repair_feedback_ref
             if (
@@ -162,6 +174,7 @@ class DeveloperActivities:
                     "repository_paths": backend.paths,
                     "upstream_interfaces": upstream_interfaces,
                     "repair_feedback": repair_feedback,
+                    "investigation": investigation,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -179,6 +192,11 @@ class DeveloperActivities:
                     *(
                         (payload.repair_feedback_ref.artifact_id,)
                         if payload.repair_feedback_ref
+                        else ()
+                    ),
+                    *(
+                        (payload.investigation_ref.artifact_id,)
+                        if payload.investigation_ref
                         else ()
                     ),
                 ),

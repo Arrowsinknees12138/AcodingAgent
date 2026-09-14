@@ -44,6 +44,9 @@ class ToolInputError(ToolRegistryError):
 
 _ROLE_TOOLS: dict[AgentRole, frozenset[str]] = {
     AgentRole.PLANNER: frozenset({"read_file", "search_code", "submit_plan", "finish"}),
+    AgentRole.INVESTIGATOR: frozenset(
+        {"read_file", "search_code", "submit_investigation", "finish"}
+    ),
     AgentRole.QA: frozenset({"read_file", "search_code", "finish"}),
     AgentRole.DEVELOPER: frozenset(
         {"read_file", "search_code", "write_file", "delete_file", "run_command", "finish"}

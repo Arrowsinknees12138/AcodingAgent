@@ -7,6 +7,7 @@ from enum import Enum
 
 class AgentRole(str, Enum):
     PLANNER = "planner"
+    INVESTIGATOR = "investigator"
     QA = "qa"
     DEVELOPER = "developer"
     REVIEWER = "reviewer"
@@ -28,6 +29,7 @@ class ArtifactKind(str, Enum):
     REPOSITORY_SNAPSHOT = "repository_snapshot"
     SYMBOL_INDEX = "symbol_index"
     CHANGE_PLAN = "change_plan"
+    INVESTIGATION = "investigation"
     SOURCE_ARCHIVE = "source_archive"
     DEVELOPER_CONTEXT = "developer_context"
     PATCH = "patch"

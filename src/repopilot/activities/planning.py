@@ -60,6 +60,7 @@ class PlanChangeInput(StrictModel):
     repair_feedback_ref: ArtifactRef | None = None
     allowed_repair_paths: tuple[str, ...] = ()
     allow_scope_expansion: bool = False
+    investigation_ref: ArtifactRef | None = None
 
 
 class PlanChangeResult(StrictModel):
@@ -110,6 +111,17 @@ class PlanningActivities:
         task = TaskSpec.model_validate_json(task_content)
         snapshot = RepositorySnapshot.model_validate_json(snapshot_content)
         symbol_content = await self._artifacts.get_bytes(snapshot.symbol_index_ref, caller)
+        investigation: dict[str, object] | None = None
+        if payload.investigation_ref is not None:
+            investigation_ref = payload.investigation_ref
+            if (
+                investigation_ref.kind is not ArtifactKind.INVESTIGATION
+                or investigation_ref.run_id != task_ref.run_id
+                or investigation_ref.tenant_id != task_ref.tenant_id
+                or payload.repair_feedback_ref is None
+            ):
+                raise ApplicationError("Planner investigation scope mismatch", non_retryable=True)
+            investigation = json.loads(await self._artifacts.get_bytes(investigation_ref, caller))
         repair_feedback: dict[str, object] | None = None
         allowed_paths: frozenset[str] = frozenset()
         existing_paths: frozenset[str] = frozenset()
@@ -144,6 +156,7 @@ class PlanningActivities:
                         "repository_snapshot": snapshot.model_dump(mode="json"),
                         "symbol_index": json.loads(symbol_content),
                         "repair_feedback": repair_feedback,
+                        "investigation": investigation,
                         "repair_allowed_paths": sorted(allowed_paths),
                         "scope_expansion_allowed": payload.allow_scope_expansion,
                         "repair_existing_paths": sorted(existing_paths.intersection(allowed_paths)),
@@ -175,6 +188,11 @@ class PlanningActivities:
                         if payload.repair_feedback_ref is not None
                         else ()
                     ),
+                    *(
+                        (payload.investigation_ref.artifact_id,)
+                        if payload.investigation_ref
+                        else ()
+                    ),
                 ),
             ),
         )
@@ -194,6 +212,7 @@ class PlanningActivities:
                     snapshot_ref.sha256,
                     snapshot.symbol_index_ref.sha256,
                     *((payload.repair_feedback_ref.sha256,) if payload.repair_feedback_ref else ()),
+                    *((payload.investigation_ref.sha256,) if payload.investigation_ref else ()),
                 ),
                 policy_version="1",
             ),
@@ -288,6 +307,11 @@ class PlanningActivities:
                     *(
                         (payload.repair_feedback_ref.artifact_id,)
                         if payload.repair_feedback_ref is not None
+                        else ()
+                    ),
+                    *(
+                        (payload.investigation_ref.artifact_id,)
+                        if payload.investigation_ref
                         else ()
                     ),
                 ),

@@ -88,6 +88,7 @@ class PostgresTemporalRunControl(RunControl):
             approval_policy=request.approval_policy,
             developer_agent_mode=True,
             planner_agent_mode=True,
+            investigator_agent_mode=True,
             scope_expansion_enabled=True,
         )
         try:

@@ -38,6 +38,7 @@ from repopilot.tools.registry import (
 
 _ROLE_MODEL_CALL_LIMIT = {
     AgentRole.PLANNER: 8,
+    AgentRole.INVESTIGATOR: 8,
     AgentRole.QA: 5,
     AgentRole.DEVELOPER: 10,
     AgentRole.REVIEWER: 3,
