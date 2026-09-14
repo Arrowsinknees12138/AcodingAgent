@@ -4,11 +4,13 @@
 
 | 优先级 | 任务 | 状态 | 验证/备注 |
 | --- | --- | --- | --- |
-| P0 | Developer 接入真正 AgentLoop | 已完成 | 新 API Run 使用多轮工具调用；旧 Run 仍走旧 Activity；单元 147/147、工作流集成 19/19（不含单独的重启用例）通过 |
-| P0 | Developer 全仓 search/read、受限 write | 已完成 | 对仓库快照全量搜索/读取；写入和删除仅限批准路径；测试命令在断网沙箱执行。Planner 漏报的目标文件仍须走 P1 Scope Expansion 才能修改 |
-| P0 | 本地 E2E benchmark + metrics | 已实现，待环境验证 | 六个固定本地用例（含 AgentLoop）、JUnit → JSON 指标与基线对比；统计单元测试通过。当前 Docker named pipe 不存在，真实 E2E 尚未跑通 |
-| P1 | Planner Agent 化 | 已实现，待环境验证 | 新 Run 走最多 8 轮的只读全仓 search/read → submit_plan → finish；服务端仍校验 DAG、路径与风险；旧 Run 保持原单次调用。单元测试通过，Docker E2E 待验证 |
-| P1 | Scope Expansion 协议 | 已实现，待环境验证 | 新 Run 的 repair 可提出最多 3 个新路径，须说明理由；自动提升至至少 Medium 并重走计划审批；旧 Run 保持原 allowlist。单元测试通过，Docker E2E 待验证 |
-| P1 | Investigator Agent | 已实现，待环境验证 | repair 前只读全仓 search/read，提交含根因、文件行证据、建议路径的独立调查产物；Planner/Developer 共享其结论，密封测试原始日志不暴露。单元测试通过，Docker E2E 待验证 |
-| P1 | Shared Blackboard | 已实现，待环境验证 | 不可变、带来源引用的安全摘要依次汇总计划/失败反馈/调查结论；Planner、Investigator、Developer 读取同一版本链；不共享密封测试源码或原始日志。单元测试通过，Docker E2E 待验证 |
-| P2 | Reviewer Agent 化 | 已实现，待环境验证 | 新 Run 的 Reviewer 只读搜索/读取候选仓库并 submit_review；沿用严格 BLOCK/COMMENT 契约与预算限制，旧 Run 保持原 Activity。单元测试通过，Docker E2E 待验证 |
+| P0 | Developer 接入真正 AgentLoop | 已完成 | 新 API Run 使用多轮工具调用，旧 Run 保持旧 Activity；真实 E2E 多 Agent 场景通过 |
+| P0 | Developer 全仓 search/read、受限 write | 已完成 | 全仓快照可搜索/读取；写入/删除仅限批准路径，命令在断网沙箱；真实 E2E 覆盖搜索、读取、写入、运行测试 |
+| P0 | 本地 E2E benchmark + metrics | 已完成 | 七个固定本地场景 7/7 通过，JUnit → JSON、基线对比、模型调用/费用/沙箱执行耗时；基线见 `benchmarks/baselines/local-2026-09-14.json` |
+| P1 | Planner Agent 化 | 已完成 | 新 Run 走只读全仓 search/read → submit_plan → finish；服务端仍校验 DAG、路径与风险；真实 E2E 通过 |
+| P1 | Scope Expansion 协议 | 已完成 | repair 可提出最多 3 个新路径，须说明理由；风险至少提升为 Medium 并重走计划审批；旧 Run 保持原 allowlist。单元与真实 Temporal 集成用例覆盖新增路径、人工审批和执行 |
+| P1 | Investigator Agent | 已完成 | repair 前只读调查、提交根因/文件行证据；结论进入 Planner/Developer；真实 E2E 的失败→调查→修复场景通过 |
+| P1 | Shared Blackboard | 已完成 | 不可变来源摘要汇总计划/失败反馈/调查结论，供多个 Agent 共享；真实 E2E 通过；原始密封测试和日志不共享 |
+| P2 | Reviewer Agent 化 | 已完成 | 新 Run 的 Reviewer 只读搜索/读取候选仓库并 submit_review；严格 BLOCK/COMMENT 契约；真实 E2E 通过 |
+
+验证（2026-09-14）：单元 152/152、契约 13/13、集成 21/21、安全 8/8、真实 E2E benchmark 7/7，合计 201 个测试分别通过。上述 E2E 使用确定性假模型，不代表线上模型质量。生产 FinalReport 的 `sandbox_seconds` 仍未计量；benchmark 由测试侧累计 Docker 命令耗时。

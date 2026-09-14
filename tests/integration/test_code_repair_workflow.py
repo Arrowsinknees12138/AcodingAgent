@@ -55,6 +55,7 @@ def _fake_create_request_ref(
     dependency_change: bool = False,
     sealed_tests_need_revision: bool = False,
     sealed_tests_never_match: bool = False,
+    scope_expansion: bool = False,
 ) -> ArtifactRef:
     return ArtifactRef(
         artifact_id=uuid4(),
@@ -65,7 +66,9 @@ def _fake_create_request_ref(
         object_key="fake/key",
         sha256="a" * 64,
         size_bytes=(
-            8
+            10
+            if scope_expansion
+            else 8
             if sealed_tests_need_revision
             else (
                 9
@@ -341,6 +344,34 @@ async def test_medium_risk_repair_requires_fresh_plan_approval(temporal_client: 
             decision="approve",
             actor_id="human-1",
             reason="repair plan",
+        ),
+    )
+    assert (await handle.result()).status is RunStatus.SUCCEEDED
+
+
+async def test_repair_scope_expansion_requires_plan_approval(temporal_client: Client) -> None:
+    workflow_input = CodeRepairWorkflowInput(
+        run_id=uuid4(),
+        tenant_id=uuid4(),
+        create_request_ref=_fake_create_request_ref(scope_expansion=True),
+        scope_expansion_enabled=True,
+    )
+    handle = await temporal_client.start_workflow(
+        CodeRepairWorkflow.run,
+        workflow_input,
+        id=workflow_id_for(workflow_input.tenant_id, workflow_input.run_id),
+        task_queue=ORCHESTRATION_TASK_QUEUE,
+    )
+    await _wait_for_status(handle, RunStatus.WAITING_PLAN_APPROVAL)
+    assert await handle.query(CodeRepairWorkflow.get_repair_rounds) == 1
+    await handle.execute_update(
+        CodeRepairWorkflow.submit_approval,
+        ApprovalRequest(
+            approval_id=uuid4(),
+            kind="plan",
+            decision="approve",
+            actor_id="human-1",
+            reason="approve justified helper path",
         ),
     )
     assert (await handle.result()).status is RunStatus.SUCCEEDED

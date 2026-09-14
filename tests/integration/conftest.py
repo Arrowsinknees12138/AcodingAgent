@@ -165,19 +165,23 @@ class FakePipelineActivities:
     @activity.defn(name="plan_change")
     async def plan_change(self, payload: PlanChangeInput) -> PlanChangeResult:
         path = "pyproject.toml" if payload.task_spec_ref.size_bytes == 7 else "src/app.py"
+        expands_scope = payload.task_spec_ref.size_bytes == 10 and payload.attempt > 1
+        if expands_scope:
+            assert payload.allow_scope_expansion
+            assert payload.allowed_repair_paths == ("src/app.py",)
         work_item = WorkItem(
             work_item_id=uuid4(),
             run_id=payload.task_spec_ref.run_id,
             kind="code",
             dependencies=(),
-            allowed_write_paths=(path,),
-            read_paths=(path,),
+            allowed_write_paths=(path, "src/helper.py") if expands_scope else (path,),
+            read_paths=(path, "src/helper.py") if expands_scope else (path,),
             owner="developer-1",
             attempt=1,
         )
         return PlanChangeResult(
             plan_ref=_derived_ref(payload.task_spec_ref, ArtifactKind.CHANGE_PLAN),
-            risk_level=RiskLevel.LOW,
+            risk_level=RiskLevel.MEDIUM if expands_scope else RiskLevel.LOW,
             planned_files=(
                 PlannedFileChange(
                     work_item_id=work_item.work_item_id,
@@ -187,9 +191,24 @@ class FakePipelineActivities:
                     responsibility="implement task",
                     required_interfaces=(),
                 ),
+                *(
+                    (
+                        PlannedFileChange(
+                            work_item_id=work_item.work_item_id,
+                            path="src/helper.py",
+                            operation="create",
+                            owner="developer-1",
+                            responsibility="new helper required by repair",
+                            required_interfaces=(),
+                        ),
+                    )
+                    if expands_scope
+                    else ()
+                ),
             ),
             work_items=(work_item,),
             waves=((work_item.work_item_id,),),
+            scope_expansion_paths=("src/helper.py",) if expands_scope else (),
         )
 
     @activity.defn(name="design_sealed_tests")
@@ -213,6 +232,11 @@ class FakePipelineActivities:
 
     @activity.defn(name="develop_patch")
     async def develop_patch(self, payload: DevelopPatchInput) -> ArtifactRef:
+        if payload.task_spec_ref.size_bytes == 10 and payload.repair_feedback_ref is not None:
+            assert {file.path for file in payload.planned_files} == {
+                "src/app.py",
+                "src/helper.py",
+            }
         return _derived_ref(payload.developer_context_ref, ArtifactKind.PATCH)
 
     @activity.defn(name="develop_patch_with_agent")
@@ -245,7 +269,7 @@ class FakePipelineActivities:
         return VerifyCandidateResult(
             report_ref=_derived_ref(payload.candidate_source_ref, ArtifactKind.VERIFICATION_REPORT),
             passed=payload.candidate_source_ref.size_bytes != 2
-            and (payload.candidate_source_ref.size_bytes != 5 or attempt > 1)
+            and (payload.candidate_source_ref.size_bytes not in (5, 10) or attempt > 1)
             and (
                 payload.candidate_source_ref.size_bytes != 7
                 or payload.dependency_layer_key == "b" * 64
