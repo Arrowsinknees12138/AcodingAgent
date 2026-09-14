@@ -89,6 +89,7 @@ class PostgresTemporalRunControl(RunControl):
             developer_agent_mode=True,
             planner_agent_mode=True,
             investigator_agent_mode=True,
+            shared_blackboard_enabled=True,
             scope_expansion_enabled=True,
         )
         try:

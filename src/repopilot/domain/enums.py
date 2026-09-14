@@ -30,6 +30,7 @@ class ArtifactKind(str, Enum):
     SYMBOL_INDEX = "symbol_index"
     CHANGE_PLAN = "change_plan"
     INVESTIGATION = "investigation"
+    BLACKBOARD = "blackboard"
     SOURCE_ARCHIVE = "source_archive"
     DEVELOPER_CONTEXT = "developer_context"
     PATCH = "patch"

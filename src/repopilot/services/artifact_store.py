@@ -40,6 +40,14 @@ _AGENT_READABLE_KINDS: dict[ArtifactKind, frozenset[AgentRole]] = {
     ArtifactKind.INVESTIGATION: frozenset(
         {AgentRole.PLANNER, AgentRole.DEVELOPER, AgentRole.REVIEWER}
     ),
+    ArtifactKind.BLACKBOARD: frozenset(
+        {
+            AgentRole.PLANNER,
+            AgentRole.INVESTIGATOR,
+            AgentRole.DEVELOPER,
+            AgentRole.REVIEWER,
+        }
+    ),
 }
 
 

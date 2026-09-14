@@ -19,6 +19,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
+from repopilot.activities.blackboard import BlackboardActivities, PublishBlackboardInput
 from repopilot.activities.developer import (
     DevelopAgentPatchInput,
     DeveloperActivities,
@@ -86,6 +87,7 @@ class CodeRepairWorkflowInput(StrictModel):
     developer_agent_mode: bool = False
     planner_agent_mode: bool = False
     investigator_agent_mode: bool = False
+    shared_blackboard_enabled: bool = False
     # Old histories keep the original repair allowlist; new runs may request
     # explicitly justified, risk-escalated scope expansion during replanning.
     scope_expansion_enabled: bool = False
@@ -217,6 +219,14 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_MODEL_START_TO_CLOSE,
                 retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
             )
+            blackboard_enabled = workflow_input.shared_blackboard_enabled and workflow.patched(
+                "shared-blackboard-v1"
+            )
+            blackboard_ref: ArtifactRef | None = None
+            if blackboard_enabled:
+                blackboard_ref = await self._publish_blackboard(
+                    planning_result.plan_ref, blackboard_ref
+                )
             approval_stages = self._resolve_approval_stages(
                 workflow_input,
                 planned_risk=planning_result.risk_level,
@@ -321,6 +331,7 @@ class CodeRepairWorkflow:
                     plan=planning_result,
                     repair_feedback_ref=repair_feedback_ref,
                     investigation_ref=investigation_ref,
+                    blackboard_ref=blackboard_ref,
                 )
                 if attempt.verification_passed and attempt.review_decision == "approve":
                     break
@@ -348,6 +359,10 @@ class CodeRepairWorkflow:
 
                 self._repair_rounds += 1
                 repair_feedback_ref = attempt.feedback_ref
+                if blackboard_enabled:
+                    blackboard_ref = await self._publish_blackboard(
+                        repair_feedback_ref, blackboard_ref
+                    )
                 await self._transition(workflow_input, RunStatus.REPLANNING)
                 current_snapshot_ref = await workflow.execute_activity_method(
                     RepositoryActivities.scan_repository,
@@ -366,12 +381,17 @@ class CodeRepairWorkflow:
                             repository_snapshot_ref=current_snapshot_ref,
                             repair_feedback_ref=repair_feedback_ref,
                             attempt=self._repair_rounds + 1,
+                            blackboard_ref=blackboard_ref,
                         ),
                         task_queue=MODEL_TASK_QUEUE,
                         schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
                         start_to_close_timeout=_MODEL_START_TO_CLOSE,
                         retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
                     )
+                    if blackboard_enabled:
+                        blackboard_ref = await self._publish_blackboard(
+                            investigation_ref, blackboard_ref
+                        )
                 await self._transition(workflow_input, RunStatus.PLANNING)
                 planning_result = await workflow.execute_activity_method(
                     (
@@ -387,12 +407,17 @@ class CodeRepairWorkflow:
                         allowed_repair_paths=original_allowed_paths,
                         allow_scope_expansion=workflow_input.scope_expansion_enabled,
                         investigation_ref=investigation_ref,
+                        blackboard_ref=blackboard_ref,
                     ),
                     task_queue=MODEL_TASK_QUEUE,
                     schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
                     start_to_close_timeout=_MODEL_START_TO_CLOSE,
                     retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
                 )
+                if blackboard_enabled:
+                    blackboard_ref = await self._publish_blackboard(
+                        planning_result.plan_ref, blackboard_ref
+                    )
                 risk_order = {RiskLevel.LOW: 0, RiskLevel.MEDIUM: 1, RiskLevel.HIGH: 2}
                 if risk_order[planning_result.risk_level] > risk_order[highest_planned_risk]:
                     highest_planned_risk = planning_result.risk_level
@@ -499,6 +524,19 @@ class CodeRepairWorkflow:
             source="workflow",
         )
 
+    @staticmethod
+    async def _publish_blackboard(
+        source_ref: ArtifactRef, previous_ref: ArtifactRef | None
+    ) -> ArtifactRef:
+        return await workflow.execute_activity_method(
+            BlackboardActivities.publish_blackboard,
+            PublishBlackboardInput(source_ref=source_ref, previous_ref=previous_ref),
+            task_queue=MODEL_TASK_QUEUE,
+            schedule_to_start_timeout=_MODEL_SCHEDULE_TO_START,
+            start_to_close_timeout=_MODEL_START_TO_CLOSE,
+            retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+        )
+
     async def _run_candidate_attempt(
         self,
         *,
@@ -511,6 +549,7 @@ class CodeRepairWorkflow:
         plan: PlanChangeResult,
         repair_feedback_ref: ArtifactRef | None,
         investigation_ref: ArtifactRef | None,
+        blackboard_ref: ArtifactRef | None,
     ) -> CandidateAttemptResult:
         agent_mode = workflow_input.developer_agent_mode and workflow.patched(
             "developer-agent-loop-v1"
@@ -551,6 +590,7 @@ class CodeRepairWorkflow:
                             planned_files=tuple(planned_files[item_id]),
                             repair_feedback_ref=repair_feedback_ref,
                             investigation_ref=investigation_ref,
+                            blackboard_ref=blackboard_ref,
                             dependency_layer_key=dependency_layer_key,
                         ),
                         task_queue=MODEL_TASK_QUEUE,

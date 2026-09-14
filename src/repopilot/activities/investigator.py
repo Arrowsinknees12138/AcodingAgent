@@ -38,6 +38,7 @@ class InvestigateInput(StrictModel):
     repository_snapshot_ref: ArtifactRef
     repair_feedback_ref: ArtifactRef
     attempt: int
+    blackboard_ref: ArtifactRef | None = None
 
 
 class InvestigatorActivities:
@@ -85,6 +86,16 @@ class InvestigatorActivities:
             payload.repair_feedback_ref.kind,
             await self._artifacts.get_bytes(payload.repair_feedback_ref, caller),
         )
+        blackboard: dict[str, object] | None = None
+        if payload.blackboard_ref is not None:
+            board_ref = payload.blackboard_ref
+            if (
+                board_ref.kind is not ArtifactKind.BLACKBOARD
+                or board_ref.run_id != first.run_id
+                or board_ref.tenant_id != first.tenant_id
+            ):
+                raise ApplicationError("Investigator blackboard scope mismatch", non_retryable=True)
+            blackboard = json.loads(await self._artifacts.get_bytes(board_ref, caller))
         source = await self._artifacts.get_bytes(snapshot.source_archive_ref, caller)
         backend = ArchiveWorkspaceBackend(
             archive=source,
@@ -100,7 +111,10 @@ class InvestigatorActivities:
             run_id=first.run_id,
             base_revision=snapshot.base_revision,
             schema_version="1",
-            input_artifact_ids=tuple(ref.artifact_id for ref in refs),
+            input_artifact_ids=(
+                *(ref.artifact_id for ref in refs),
+                *((payload.blackboard_ref.artifact_id,) if payload.blackboard_ref else ()),
+            ),
         )
         seed_ref = await self._artifacts.put_bytes(
             ArtifactKind.TRAJECTORY,
@@ -108,6 +122,7 @@ class InvestigatorActivities:
                 {
                     "task": task.model_dump(mode="json"),
                     "safe_failure_summary": feedback,
+                    "blackboard": blackboard,
                     "repository_paths": backend.paths,
                 },
                 ensure_ascii=False,

@@ -65,6 +65,7 @@ class DevelopPatchInput(StrictModel):
 class DevelopAgentPatchInput(DevelopPatchInput):
     dependency_layer_key: str | None = None
     investigation_ref: ArtifactRef | None = None
+    blackboard_ref: ArtifactRef | None = None
 
 
 class DeveloperActivities:
@@ -138,6 +139,16 @@ class DeveloperActivities:
         ]
         repair_feedback: dict[str, object] | None = None
         investigation: dict[str, object] | None = None
+        blackboard: dict[str, object] | None = None
+        if payload.blackboard_ref is not None:
+            board_ref = payload.blackboard_ref
+            if (
+                board_ref.kind is not ArtifactKind.BLACKBOARD
+                or board_ref.run_id != context_ref.run_id
+                or board_ref.tenant_id != context_ref.tenant_id
+            ):
+                raise ApplicationError("Developer blackboard scope mismatch", non_retryable=True)
+            blackboard = json.loads(await self._artifacts.get_bytes(board_ref, caller))
         if payload.investigation_ref is not None:
             investigation_ref = payload.investigation_ref
             if (
@@ -175,6 +186,7 @@ class DeveloperActivities:
                     "upstream_interfaces": upstream_interfaces,
                     "repair_feedback": repair_feedback,
                     "investigation": investigation,
+                    "blackboard": blackboard,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -199,6 +211,7 @@ class DeveloperActivities:
                         if payload.investigation_ref
                         else ()
                     ),
+                    *((payload.blackboard_ref.artifact_id,) if payload.blackboard_ref else ()),
                 ),
             ),
         )

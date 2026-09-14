@@ -12,6 +12,7 @@ from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 from tests.contract.conftest_git import run_git
 
+from repopilot.activities.blackboard import BlackboardActivities
 from repopilot.activities.developer import DeveloperActivities
 from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
@@ -342,6 +343,7 @@ async def test_real_pipeline_outcomes(
                 activities=[
                     PlanningActivities(**model_args).plan_change,
                     PlanningActivities(**model_args).plan_change_with_agent,
+                    BlackboardActivities(artifact_store=artifact_store).publish_blackboard,
                     QaActivities(**model_args).design_sealed_tests,
                     DeveloperActivities(**model_args).develop_patch,
                     DeveloperActivities(
@@ -360,6 +362,7 @@ async def test_real_pipeline_outcomes(
                     create_request_ref=request_ref,
                     developer_agent_mode=agent_mode,
                     planner_agent_mode=agent_mode,
+                    shared_blackboard_enabled=agent_mode,
                 ),
                 id=workflow_id_for(tenant_id, run_id),
                 task_queue=ORCHESTRATION_TASK_QUEUE,

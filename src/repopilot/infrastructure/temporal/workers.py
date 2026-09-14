@@ -13,6 +13,7 @@ import sys
 
 from temporalio.worker import Worker
 
+from repopilot.activities.blackboard import BlackboardActivities
 from repopilot.activities.developer import DeveloperActivities
 from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
@@ -183,6 +184,7 @@ async def _run_model_worker() -> None:
         model=settings.model_name,
         reservation_usd=settings.model_reservation_usd,
     )
+    blackboard = BlackboardActivities(artifact_store=artifacts)
     qa = QaActivities(
         artifact_store=artifacts,
         gateway=gateway,
@@ -215,6 +217,7 @@ async def _run_model_worker() -> None:
             planning.plan_change,
             planning.plan_change_with_agent,
             investigator.investigate_failure,
+            blackboard.publish_blackboard,
             qa.design_sealed_tests,
             developer.develop_patch,
             developer.develop_patch_with_agent,
