@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import tarfile
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -43,7 +45,7 @@ def _archive(files: dict[str, bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def test_generated_patch_normalizes_crlf_checkout() -> None:
+def test_generated_patch_applies_to_crlf_checkout(tmp_path: Path) -> None:
     patch = _build_patch(
         DeveloperPatchDesign(
             edits=(
@@ -57,8 +59,14 @@ def test_generated_patch_normalizes_crlf_checkout() -> None:
         ),
         {"calc.py": "def add(a, b):\r\n    return a - b\r\n"},
     )
-    assert b"\r" not in patch
-    assert b"-    return a - b\n" in patch
+    assert b"-    return a - b\r\n" in patch
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "calc.py").write_bytes(b"def add(a, b):\r\n    return a - b\r\n")
+    patch_path = tmp_path / "change.patch"
+    patch_path.write_bytes(patch)
+    subprocess.run(["git", "apply", "--check", str(patch_path)], cwd=tmp_path, check=True)
+    subprocess.run(["git", "apply", str(patch_path)], cwd=tmp_path, check=True)
+    assert (tmp_path / "calc.py").read_bytes() == b"def add(a, b):\r\n    return a + b\r\n"
 
 
 async def _task_ref(

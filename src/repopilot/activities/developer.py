@@ -519,10 +519,11 @@ def _build_patch(design: DeveloperPatchDesign, source_files: dict[str, str | Non
             fromfile, tofile = f"a/{path}", "/dev/null"
         else:
             fromfile, tofile = f"a/{path}", f"b/{path}"
+        newline = "\r\n" if "\r\n" in old_content else "\n"
         diff = "".join(
             difflib.unified_diff(
-                _patch_lines(old_content),
-                _patch_lines(new_content),
+                _patch_lines(old_content, newline),
+                _patch_lines(new_content, newline),
                 fromfile=fromfile,
                 tofile=tofile,
                 lineterm="\n",
@@ -538,13 +539,14 @@ def _build_patch(design: DeveloperPatchDesign, source_files: dict[str, str | Non
     return encoded
 
 
-def _patch_lines(content: str) -> list[str]:
-    # Git's unified patch format uses LF even when a checkout/archive contains
-    # CRLF. Mixing CRLF removed lines with LF added lines makes git apply reject
-    # an otherwise valid edit on Windows.
+def _patch_lines(content: str, newline: str) -> list[str]:
+    # Patch context must match the checkout's bytes. Keep CRLF in both removed
+    # and added lines when the original file uses CRLF; patch headers stay LF.
     content = content.replace("\r\n", "\n").replace("\r", "\n")
     if content and not content.endswith("\n"):
         content += "\n"
+    if newline != "\n":
+        content = content.replace("\n", newline)
     return content.splitlines(keepends=True)
 
 
