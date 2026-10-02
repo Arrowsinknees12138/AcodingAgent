@@ -38,6 +38,7 @@ class OpenAICompatibleProvider:
         client: httpx.AsyncClient | None = None,
         retry_base_seconds: float = 1.0,
         structured_output_mode: Literal["json_schema", "json_object"] = "json_schema",
+        reasoning_effort: Literal["none", "low", "medium", "high", "max"] | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -47,6 +48,7 @@ class OpenAICompatibleProvider:
         self._client = client
         self._retry_base_seconds = retry_base_seconds
         self._structured_output_mode = structured_output_mode
+        self._reasoning_effort = reasoning_effort
 
     async def generate[T: BaseModel](
         self, request: ModelRequest, output_type: type[T]
@@ -66,6 +68,8 @@ class OpenAICompatibleProvider:
             "max_tokens": request.max_output_tokens,
             "response_format": self._response_format(output_type),
         }
+        if self._reasoning_effort is not None:
+            payload["reasoning_effort"] = self._reasoning_effort
         raw = await self._post_with_retry(payload)
         usage = self._parse_usage(raw)
         try:
@@ -154,6 +158,15 @@ class OpenAICompatibleProvider:
         normalized_messages: list[dict[str, object]] = []
         for message in messages:
             normalized = message.copy()
+            # AgentLoop chooses tools through structured JSON, not native
+            # tool_calls. Its observations therefore have no tool_call_id.
+            # Keep native tool results intact; encode synthetic observations as
+            # user data so strict compatible endpoints accept the conversation.
+            if normalized.get("role") == "tool" and "tool_call_id" not in normalized:
+                normalized = {
+                    "role": "user",
+                    "content": {"tool_observation": normalized.get("content")},
+                }
             if isinstance(normalized.get("content"), dict):
                 normalized["content"] = json.dumps(
                     normalized["content"], ensure_ascii=False, sort_keys=True

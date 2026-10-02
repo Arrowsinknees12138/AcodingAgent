@@ -132,25 +132,25 @@ class CodeRepairWorkflow:
         self._review_ref: ArtifactRef | None = None
         self._repair_rounds = 0
         self._diagnosis_ref: ArtifactRef | None = None
+        self._deadline_exceeded = False
 
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
         if workflow_input.wall_timeout_seconds is None:
             return await self._execute(workflow_input)
+        execution = asyncio.create_task(self._execute(workflow_input))
+        timer = asyncio.create_task(asyncio.sleep(workflow_input.wall_timeout_seconds))
         try:
-            return await asyncio.wait_for(
-                self._execute(workflow_input), timeout=workflow_input.wall_timeout_seconds
-            )
-        except TimeoutError:
-            return await asyncio.shield(
-                self._finalize(
-                    workflow_input,
-                    RunStatus.FAILED,
-                    error=self._error(
-                        ErrorCode.BUDGET_EXCEEDED, "Global execution deadline exceeded"
-                    ),
-                )
-            )
+            await workflow.wait([execution, timer], return_when=asyncio.FIRST_COMPLETED)
+            if not execution.done() and self._status is not RunStatus.FINALIZING:
+                self._deadline_exceeded = True
+                execution.cancel()
+            return await execution
+        except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
+            execution.cancel()
+            return await asyncio.shield(execution)
+        finally:
+            timer.cancel()
 
     async def _execute(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
         self._workflow_id = workflow.info().workflow_id
@@ -550,13 +550,7 @@ class CodeRepairWorkflow:
                 )
             return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
         except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
-            deadline_hit = (
-                workflow_input.wall_timeout_seconds is not None
-                and self._started_at is not None
-                and (workflow.now() - self._started_at).total_seconds()
-                >= workflow_input.wall_timeout_seconds
-                and workflow.cancellation_reason() is None
-            )
+            deadline_hit = self._deadline_exceeded and workflow.cancellation_reason() is None
             return await asyncio.shield(
                 self._finalize(
                     workflow_input,
@@ -570,6 +564,14 @@ class CodeRepairWorkflow:
         except Exception as exc:
             if self._status is RunStatus.FINALIZING:
                 raise
+            if self._deadline_exceeded and workflow.cancellation_reason() is None:
+                return await asyncio.shield(
+                    self._finalize(
+                        workflow_input,
+                        RunStatus.FAILED,
+                        error=self._error(ErrorCode.BUDGET_EXCEEDED, "Global deadline exceeded"),
+                    )
+                )
             if workflow.cancellation_reason() is not None:
                 return await asyncio.shield(
                     self._finalize(
@@ -595,6 +597,13 @@ class CodeRepairWorkflow:
                 "POLICY_DENIED": ErrorCode.POLICY_DENIED,
                 "SandboxBudgetExceeded": ErrorCode.BUDGET_EXCEEDED,
                 "DEVELOPER_OUTPUT_INVALID": ErrorCode.MODEL_OUTPUT_INVALID,
+                "PLAN_INVALID": ErrorCode.MODEL_OUTPUT_INVALID,
+                "TEST_DESIGN_INVALID": ErrorCode.TEST_BUNDLE_INVALID,
+                "DEVELOPER_AGENT_FAILED": ErrorCode.MODEL_OUTPUT_INVALID,
+                "MODEL_OUTPUT_INVALID": ErrorCode.MODEL_OUTPUT_INVALID,
+                "FORBIDDEN_PATH_REQUIRED": ErrorCode.FORBIDDEN_PATH_REQUIRED,
+                "MODEL_RATE_LIMITED": ErrorCode.MODEL_RATE_LIMITED,
+                "REVIEW_INVALID": ErrorCode.MODEL_OUTPUT_INVALID,
             }
             code = known.get(exc.cause.type or "")
             if code is not None:

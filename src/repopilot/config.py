@@ -70,6 +70,7 @@ class Settings(BaseSettings):
     model_output_usd_per_million_tokens: Decimal = Field(default=Decimal("0"), ge=0)
     model_reservation_usd: Decimal = Field(default=Decimal("0.10"), gt=0)
     model_structured_output_mode: Literal["json_schema", "json_object"] = "json_schema"
+    model_reasoning_effort: Literal["none", "low", "medium", "high", "max"] | None = None
 
     # --- Sandbox RPC（仅 model-worker / sandbox-worker 使用） ---
     sandbox_service_url: str = "http://127.0.0.1:8091"

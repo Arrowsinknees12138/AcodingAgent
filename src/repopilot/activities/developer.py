@@ -263,7 +263,11 @@ class DeveloperActivities:
         )
         if result.status != "succeeded":
             message = result.error.message if result.error is not None else "agent did not finish"
-            raise ApplicationError(message, type="DEVELOPER_AGENT_FAILED", non_retryable=True)
+            raise ApplicationError(
+                message,
+                type=result.error.code.value if result.error else "DEVELOPER_AGENT_FAILED",
+                non_retryable=True,
+            )
         try:
             edits = backend.final_edits(tuple(planned))
             if not edits:

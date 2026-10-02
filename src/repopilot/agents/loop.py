@@ -155,7 +155,11 @@ class AgentLoop:
                 messages.append(
                     {
                         "role": "user",
-                        "content": f"上一轮结构化输出无效，请严格按 Schema 重试：{exc}",
+                        "content": (
+                            f"上一轮结构化输出无效，请严格按 Schema 重试：{exc}。"
+                            'Required top-level keys: {"tool": "allowed_tool_name", '
+                            '"arguments": {...}}. Do not omit tool or return arguments alone.'
+                        ),
                     }
                 )
                 if consecutive_format_errors < 2:

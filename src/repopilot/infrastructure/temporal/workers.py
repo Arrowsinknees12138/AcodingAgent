@@ -183,6 +183,7 @@ async def _run_model_worker() -> None:
         input_usd_per_million_tokens=settings.model_input_usd_per_million_tokens,
         output_usd_per_million_tokens=settings.model_output_usd_per_million_tokens,
         structured_output_mode=settings.model_structured_output_mode,
+        reasoning_effort=settings.model_reasoning_effort,
     )
     gateway = BudgetedModelGateway(provider, PostgresModelBudgetStore(get_session_factory()))
     planning = PlanningActivities(

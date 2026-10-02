@@ -393,12 +393,18 @@ class DockerSandboxService:
         # （137）原样返回，而不是它自己的"我把它杀了"哨兵值 124；只有
         # 用默认信号，或者用 --kill-after 走"先 TERM、不听话再 KILL"的
         # 两段式，才能稳定拿到 124 来判断"是不是我们的超时导致的"。
+        # Run the approved pytest executable through the dependency layer's
+        # interpreter. This also places cwd on sys.path for flat-layout repos.
+        command = (
+            ["python", "-m", "pytest", *request.args]
+            if request.executable == "pytest"
+            else [request.executable, *request.args]
+        )
         wrapped_cmd = [
             "timeout",
             f"--kill-after={min(5, max(1, request.timeout_seconds))}s",
             f"{request.timeout_seconds}s",
-            request.executable,
-            *request.args,
+            *command,
         ]
 
         started_at = datetime.now(UTC)

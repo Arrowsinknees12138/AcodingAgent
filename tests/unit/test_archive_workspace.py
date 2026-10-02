@@ -118,6 +118,30 @@ async def test_archive_workspace_reads_entire_snapshot_but_writes_only_approved_
     assert "test_value" in readable.content  # type: ignore[attr-defined]
     search = await backend.search_code(SearchCodeRequest(query="test_value"), context)
     assert search.matches[0].path == "tests/test_base.py"
+    root_search = await registry.execute(
+        role=AgentRole.DEVELOPER,
+        allowed_tools=("search_code",),
+        name="search_code",
+        arguments={"query": "test_value", "paths": ["."]},
+        context=context,
+    )
+    assert root_search.matches[0].path == "tests/test_base.py"
+    with pytest.raises(ToolNotAllowedError):
+        await registry.execute(
+            role=AgentRole.DEVELOPER,
+            allowed_tools=("search_code",),
+            name="search_code",
+            arguments={"query": "test_value", "paths": [".", "../outside"]},
+            context=context,
+        )
+    with pytest.raises(ToolNotAllowedError):
+        await registry.execute(
+            role=AgentRole.DEVELOPER,
+            allowed_tools=("search_code",),
+            name="search_code",
+            arguments={"query": "test_value", "paths": ["."]},
+            context=context.model_copy(update={"read_all_repository_files": False}),
+        )
     assert ".repopilot/sealed_tests/secret.py" not in backend.paths
     with pytest.raises(ToolNotAllowedError):
         await registry.execute(

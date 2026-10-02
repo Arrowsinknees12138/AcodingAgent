@@ -172,7 +172,11 @@ class ReviewerActivities:
         )
         if result.status != "succeeded" or submit.review is None:
             message = result.error.message if result.error else "Reviewer did not submit"
-            raise ApplicationError(message, type="REVIEW_INVALID", non_retryable=True)
+            raise ApplicationError(
+                message,
+                type=result.error.code.value if result.error else "REVIEW_INVALID",
+                non_retryable=True,
+            )
         review_ref = await self._artifacts.put_bytes(
             ArtifactKind.REVIEW_DECISION,
             submit.review.model_dump_json().encode(),

@@ -108,8 +108,10 @@ class SandboxBudget(Base):
     consumed_ms: Mapped[int] = mapped_column(default=0)
     reserved_ms: Mapped[int] = mapped_column(default=0)
     __table_args__ = (
-        CheckConstraint("max_ms > 0 and consumed_ms >= 0 and reserved_ms >= 0",
-                        name="ck_sandbox_budget_nonnegative"),
+        CheckConstraint(
+            "max_ms > 0 and consumed_ms >= 0 and reserved_ms >= 0",
+            name="ck_sandbox_budget_nonnegative",
+        ),
     )
 
 

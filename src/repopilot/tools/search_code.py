@@ -20,10 +20,15 @@ class SearchCodeTool:
     async def execute(self, request: BaseModel, context: ToolContext) -> BaseModel:
         typed = SearchCodeRequest.model_validate(request)
         requested = typed.paths or (() if context.read_all_repository_files else context.read_paths)
+        root_search = context.read_all_repository_files and "." in requested
         paths = tuple(
             normalize_relative_path(path)
             if context.read_all_repository_files
             else require_allowed_path(path, context.read_paths)
             for path in requested
+            if not (root_search and path == ".")
         )
+        if root_search:
+            # Root search within an existing full-read grant; other paths still validate above.
+            paths = ()
         return await self._backend.search_code(typed.model_copy(update={"paths": paths}), context)

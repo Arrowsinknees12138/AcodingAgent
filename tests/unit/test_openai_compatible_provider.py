@@ -161,6 +161,7 @@ async def test_provider_supports_json_object_compatibility_mode() -> None:
         api_key="secret",
         artifact_store=store,
         structured_output_mode="json_object",
+        reasoning_effort="none",
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     await provider.generate(
@@ -178,6 +179,7 @@ async def test_provider_supports_json_object_compatibility_mode() -> None:
     )
 
     assert seen_payload["response_format"] == {"type": "json_object"}
+    assert seen_payload["reasoning_effort"] == "none"
     messages = seen_payload["messages"]
     assert isinstance(messages, list)
     first_message = messages[0]
@@ -197,6 +199,8 @@ async def test_provider_serializes_object_content_without_changing_other_content
                     {"role": "user", "content": object_content},
                     {"role": "user", "content": "plain text"},
                     {"role": "user", "content": content_parts},
+                    {"role": "tool", "content": {"result": "read_file output"}},
+                    {"role": "tool", "tool_call_id": "call-1", "content": "native"},
                 ]
             },
             ensure_ascii=False,
@@ -245,3 +249,6 @@ async def test_provider_serializes_object_content_without_changing_other_content
     assert json.loads(sent_content[0]) == object_content
     assert sent_content[1] == "plain text"
     assert sent_content[2] == content_parts
+    assert sent_messages[4]["role"] == "user"
+    assert json.loads(sent_content[3]) == {"tool_observation": {"result": "read_file output"}}
+    assert sent_messages[5] == {"role": "tool", "tool_call_id": "call-1", "content": "native"}

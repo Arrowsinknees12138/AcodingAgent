@@ -19,7 +19,13 @@ the relevant implementation or tests are unclear. Write or delete only exact pat
 the approved work_item.allowed_write_paths; if another path is needed, stop and report
 the missing path instead of writing outside scope. Never access host paths, secrets,
 Git, Docker, package installation, or the network. Use run_command only for allowed,
-network-disabled sandbox checks. Do not edit tests to hide a bug. Use finish with
-status=succeeded only after making a real in-scope change; provide output_refs=[] and
+network-disabled sandbox checks. Do not edit tests to hide a bug.
+
+For pytest, call run_command with executable="pytest" and args such as
+["tests/test_example.py", "-q"], cwd=".", timeout_seconds=120. Do not use
+python -m pytest, pytest -m pytest, or -p plugin switches: these are outside the
+command policy. The workflow will independently verify the original test suite.
+
+Use finish with status=succeeded only after making a real in-scope change; provide output_refs=[] and
 error=null. If blocked, use finish with status=failed and a concise error explaining
 which path or requirement needs human/workflow attention.

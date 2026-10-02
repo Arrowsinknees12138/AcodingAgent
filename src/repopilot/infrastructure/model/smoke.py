@@ -115,6 +115,7 @@ async def run_model_smoke(
         input_usd_per_million_tokens=settings.model_input_usd_per_million_tokens,
         output_usd_per_million_tokens=settings.model_output_usd_per_million_tokens,
         structured_output_mode=settings.model_structured_output_mode,
+        reasoning_effort=settings.model_reasoning_effort,
         client=client,
     )
     response = await provider.generate(
