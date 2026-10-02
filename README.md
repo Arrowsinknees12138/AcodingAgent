@@ -2,6 +2,12 @@
 
 一个可恢复、可验证、具备明确安全边界的本地多智能体代码修复原型。
 
+新增业务入口：**导入失败的 GitHub Actions 运行，无需手写 bug 描述**。
+系统固定测试版本、收集证据、在独立沙箱复现并分类；可选择仅诊断，或在
+通过复现门禁后生成候选补丁。原始失败必须修复，原测试与关键配置受保护，
+报告区分本地验证和未验证的远端 CI。支持范围、启动及 CLI/API 使用见
+[第一阶段 CI 修复指南](./CI_REPAIR_GUIDE.md)。网页入口：`/ui`。
+
 - 生产级系统设计（为什么做、最终形态）：[PRODUCTION_SYSTEM_DESIGN_DEMO.md](./PRODUCTION_SYSTEM_DESIGN_DEMO.md)
 - Phase 0 实施设计（本仓库严格遵循的代码结构 / 接口 / 状态机）：[PHASE0_IMPLEMENTATION_DESIGN.md](./PHASE0_IMPLEMENTATION_DESIGN.md)
 - 中文使用手册（安装、运行、审批、查看报告）：[USER_MANUAL.md](./USER_MANUAL.md)

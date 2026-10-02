@@ -20,6 +20,67 @@ from repopilot import __version__
 from repopilot.config import get_settings
 
 app = typer.Typer(help="RepoPilot：本地多智能体代码修复原型 CLI")
+ci_app = typer.Typer(help="导入失败 CI、查看诊断并生成候选修复")
+app.add_typer(ci_app, name="ci")
+
+
+def _ci_http(method: str, path: str, body: dict[str, object] | None = None) -> None:
+    try:
+        response = httpx.request(
+            method, f"{_base_url()}{path}", json=body, headers=_headers(), timeout=60
+        )
+    except httpx.HTTPError as exc:
+        typer.secho(f"API 不可达：{exc}", fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
+    _print_response(response)
+
+
+@ci_app.command("jobs")
+def ci_jobs(run_url: str) -> None:
+    """列出指定 run attempt 的 job；查看失败 job ID。"""
+    from urllib.parse import urlencode
+
+    _ci_http("GET", "/v1/ci/jobs?" + urlencode({"run_url": run_url}))
+
+
+@ci_app.command("import")
+def ci_import(
+    run_url: str,
+    job_id: Annotated[int | None, typer.Option("--job-id")] = None,
+    repair: Annotated[bool, typer.Option("--repair")] = False,
+    max_cost: Annotated[float, typer.Option("--max-cost")] = 5,
+    max_calls: Annotated[int, typer.Option("--max-calls")] = 50,
+    wall_seconds: Annotated[int, typer.Option("--wall-seconds")] = 3600,
+    sandbox_seconds: Annotated[int, typer.Option("--sandbox-seconds")] = 1800,
+) -> None:
+    """默认仅诊断；--repair 在通过复现门禁后启动修复。"""
+    _ci_http(
+        "POST",
+        "/v1/ci/import",
+        {
+            "run_url": run_url,
+            "job_id": job_id,
+            "mode": "repair" if repair else "diagnose",
+            "budget": {
+                "max_cost_usd": max_cost,
+                "max_model_calls": max_calls,
+                "max_wall_time_seconds": wall_seconds,
+                "max_sandbox_seconds": sandbox_seconds,
+            },
+        },
+    )
+
+
+@ci_app.command("show")
+def ci_show(run_id: UUID) -> None:
+    """查看分类、两次复现、最终报告和产物引用。"""
+    _ci_http("GET", f"/v1/ci/{run_id}")
+
+
+@ci_app.command("repair")
+def ci_repair(run_id: UUID) -> None:
+    """为已完成且可修复的诊断创建修复 Run，沿用原预算/审批设置。"""
+    _ci_http("POST", f"/v1/ci/{run_id}:repair")
 
 
 def _base_url() -> str:

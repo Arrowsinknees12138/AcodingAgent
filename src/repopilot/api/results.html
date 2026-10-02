@@ -86,6 +86,23 @@
       </aside>
       <div>
         <section class="panel">
+          <h2>导入失败 CI</h2>
+          <p class="muted">接收公开仓库的 GitHub Actions 失败运行。首版支持 push、Ubuntu、Python 3.12 和 tests/ 下的 pytest 测试。</p>
+          <form id="ci-form">
+            <div class="form-grid">
+              <label class="wide">Actions Run URL<input id="ci-url" required type="url" placeholder="https://github.com/owner/repo/actions/runs/123"></label>
+              <label>失败 Job<select id="ci-job"><option value="">仅有一个失败 job 时自动选择</option></select></label>
+              <label>处理模式<select id="ci-mode"><option value="diagnose">仅诊断（默认）</option><option value="repair">复现通过后生成候选补丁</option></select></label>
+              <label>模型费用上限（USD）<input id="ci-cost" type="number" min="0.01" max="20" step="0.01" value="5" required></label>
+              <label>模型调用上限<input id="ci-calls" type="number" min="1" max="100" value="50" required></label>
+              <label>总时限（秒，包含审批等待）<input id="ci-wall" type="number" min="1" max="7200" value="3600" required></label>
+              <label>沙箱累计时限（秒）<input id="ci-sandbox" type="number" min="1" max="3600" value="1800" required></label>
+            </div>
+            <div class="actions"><button type="button" id="ci-list" class="secondary">读取 Jobs</button><button type="submit" id="ci-submit">导入并处理</button></div>
+          </form>
+        </section>
+        <section class="panel" id="ci-panel" hidden><h2>CI 诊断与验证</h2><div id="ci-summary"></div></section>
+        <section class="panel">
           <h2>创建新任务</h2>
           <form id="create-form">
             <div class="form-grid">
@@ -178,6 +195,76 @@
     }
 
     async function json(path) { return (await api(path)).json(); }
+
+    async function listCiJobs() {
+      const button = $("ci-list"); button.disabled = true;
+      try {
+        const run = await json(`/v1/ci/jobs?run_url=${encodeURIComponent($("ci-url").value.trim())}`);
+        $("ci-url").value = `${run.repository_url}/actions/runs/${run.run_id}/attempts/${run.run_attempt}`;
+        const select = $("ci-job"); select.replaceChildren();
+        select.append(new Option("选择失败 job", ""));
+        for (const job of run.jobs) {
+          const option = new Option(`${job.name} · ${job.conclusion || "运行中"} · ${job.job_id}`, String(job.job_id));
+          option.disabled = job.conclusion !== "failure"; select.append(option);
+        }
+        const failed = run.jobs.filter(job => job.conclusion === "failure");
+        if (failed.length === 1) select.value = String(failed[0].job_id);
+        notice(`已固定第 ${run.run_attempt} 次运行；找到 ${failed.length} 个失败 job。`);
+      } catch (error) { notice(error.message, true); }
+      finally { button.disabled = false; }
+    }
+
+    async function importCi(event) {
+      event.preventDefault();
+      if (!$("ci-form").reportValidity()) return;
+      const button = $("ci-submit"); button.disabled = true;
+      try {
+        const run = await (await api("/v1/ci/import", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({
+          run_url: $("ci-url").value.trim(), job_id: $("ci-job").value ? Number($("ci-job").value) : null,
+          mode: $("ci-mode").value, budget: {max_cost_usd: Number($("ci-cost").value), max_model_calls: Number($("ci-calls").value),
+            max_wall_time_seconds: Number($("ci-wall").value), max_sandbox_seconds: Number($("ci-sandbox").value)}
+        })})).json();
+        await selectRun(run.run_id);
+        notice(`CI 已导入：${run.run_id}。点击连接 / 刷新查看进度；重复导入同一来源返回原任务。`);
+      } catch (error) { notice(error.message, true); }
+      finally { button.disabled = false; }
+    }
+
+    async function renderCi(id, version) {
+      const result = await json(`/v1/ci/${encodeURIComponent(id)}`);
+      if (version !== requestVersion) return;
+      const report = result.diagnosis;
+      $("ci-panel").hidden = !report;
+      const container = $("ci-summary"); container.replaceChildren();
+      if (!report) return;
+      const labels = {code_failure: "可复现代码故障", environment_failure: "环境 / 依赖故障", suspected_flaky: "疑似不稳定测试",
+        not_reproduced: "未复现原故障", insufficient_evidence: "证据不足", unsupported_environment: "环境暂不支持", platform_failure: "平台故障"};
+      container.append(node("strong", "", labels[report.category] || report.category));
+      for (const reason of report.reasons) container.append(node("p", "", reason));
+      container.append(node("p", "muted", "远端 CI：未验证。下面的测试结果来自本地隔离环境。"));
+      if (report.source) {
+        const source = report.source;
+        container.append(node("p", "muted", `Job ${source.job_name} · attempt ${source.run_attempt} · tested SHA ${source.tested_sha}`));
+        const tests = node("pre", "", source.target_test_ids.join("\n")); container.append(tests);
+      }
+      report.observations.forEach((observation, i) => {
+        container.append(node("p", "", `复现 ${i + 1}：退出码 ${observation.exit_code} · ${observation.duration_ms} ms`));
+      });
+      if (result.final_report) {
+        const final = result.final_report;
+        container.append(node("p", "", `本地验证：${final.local_validation_passed === true ? "通过" : final.local_validation_passed === false ? "未通过" : "尚未生成候选验证"} · 模型费用 $${final.model_cost_usd} · 沙箱 ${final.sandbox_seconds} 秒`));
+      }
+      if (report.repair_eligible && report.source?.mode === "diagnose" && result.run.status === "succeeded") {
+        const repair = node("button", "", "根据此诊断生成候选补丁");
+        repair.type = "button";
+        repair.addEventListener("click", async () => {
+          repair.disabled = true;
+          try { const run = await (await api(`/v1/ci/${encodeURIComponent(id)}:repair`, {method: "POST"})).json(); await selectRun(run.run_id); }
+          catch (error) { notice(error.message, true); repair.disabled = false; }
+        });
+        container.append(repair);
+      }
+    }
 
     function artifactPath(artifact) { return `/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`; }
 
@@ -411,6 +498,7 @@
         renderActions(run);
         renderEvents(events);
         renderArtifacts(artifacts);
+        await renderCi(id, version);
         document.querySelectorAll(".run-button").forEach((button) => button.classList.toggle("active", button.textContent.includes(id)));
         notice(`已加载 Run ${id}；点击产物可查看详情或下载。`);
       } catch (error) {
@@ -507,6 +595,9 @@
     }
 
     $("connect").addEventListener("click", connect);
+    $("ci-list").addEventListener("click", listCiJobs);
+    $("ci-form").addEventListener("submit", importCi);
+    $("ci-url").addEventListener("input", () => { $("ci-job").replaceChildren(new Option("仅有一个失败 job 时自动选择", "")); });
     $("create-form").addEventListener("submit", createRun);
     $("open-run").addEventListener("click", () => selectRun($("run-id").value));
     $("token").addEventListener("keydown", (event) => { if (event.key === "Enter") connect(); });
