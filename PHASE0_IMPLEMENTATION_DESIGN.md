@@ -2102,3 +2102,27 @@ Phase 1 才引入：GitHub App、Draft PR、Kubernetes staging、gVisor、OIDC�
 ---
 
 本实施设计的核心约束是：先完成一个边界清晰、能够恢复、能够失败得明白的系统，再增加更多 Agent、模型和部署复杂度。
+# CI 修复第一阶段扩展（2026-10-02）
+
+本节是 Phase 0 的增量设计。原始手写任务兼容，CI 导入复用 RunControl、
+Artifact Store 和 CodeRepairWorkflow；不增加 GitHub App、Webhook 或 PR 写入。
+
+1. `POST /v1/ci/import` 接收 Actions run URL、可选 job ID、diagnose/repair 模式、
+   预算和审批策略。请求立即持久化并启动 Temporal；GitHub I/O 在 repository
+   worker 的 collect_ci_failure Activity 内执行。`GET /v1/ci/jobs` 用于选择 job。
+2. 固定 run attempt，按 job 处理；持久化脱敏 CI_EVIDENCE、CI_DIAGNOSIS。
+   日志必须证明 checkout 的 SHA，不能以最新 HEAD 代替；PR 的 merge SHA 与
+   head SHA 分开记录，fork/服务容器/矩阵等尚未适配环境保守拒绝。
+3. 支持公开仓库、Linux/Python 3.12、pytest tests/。CI 参数不是执行命令；
+   复现和回归使用平台构造的固定命令。两次全新断网沙箱执行原始测试。
+   分类包括代码故障、环境故障、疑似 flaky、无法复现、证据不足及平台故障。
+4. 只有原 CI 的目标失败同签名复现才调用模型；diagnose 模式在诊断后结束。
+   诊断完成用 Run SUCCEEDED 表示流程完成，报告不声明修复成功。
+5. CI 候选验证使用冻结命令和原始测试集合，目标必须变为 PASSED；原通过
+   测试不得失败、缺失或跳过；测试、依赖与关键配置哈希不得改变。
+   QA 补充测试不能替代原始 oracle。
+6. CI Run 设置全局 wall deadline（包含审批等待，不含最终清理），沙箱命令
+   时间通过 PostgreSQL 预留/结算跨 worker 计量，预算不足时拒绝新命令。
+   最终报告包含诊断引用、本地验证状态，远端 CI 始终标为未验证。
+7. CLI 与浏览器提供导入、诊断查看、切换到修复任务、下载报告/patch；
+   幂等键固定对应同一次导入，取消后重复提交不得重启旧 Run。

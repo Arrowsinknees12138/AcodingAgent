@@ -16,6 +16,7 @@ from pydantic import Field, field_validator
 
 from repopilot.domain import StrictModel
 from repopilot.domain.artifacts import ArtifactRef
+from repopilot.domain.ci import CiFailureContext, CiImportSpec
 from repopilot.domain.enums import RiskLevel, RunStatus
 from repopilot.domain.errors import ErrorInfo
 from repopilot.domain.policies import ApprovalPolicy, DependencyPolicy, QaPolicy
@@ -59,6 +60,8 @@ class CreateRunRequest(StrictModel):
     qa: QaPolicy = QaPolicy()
     # 在 Planner Activity 接入前由调用方提供；接入后将由 ChangePlan.risk_flags 推导。
     risk_level: RiskLevel = RiskLevel.LOW
+    ci_import: CiImportSpec | None = None
+    ci_failure: CiFailureContext | None = None
 
     @field_validator("acceptance_criteria")
     @classmethod
@@ -88,6 +91,7 @@ class TaskSpec(StrictModel):
     dependency_policy: DependencyPolicy = DependencyPolicy()
     qa: QaPolicy = QaPolicy()
     risk_level: RiskLevel = RiskLevel.LOW
+    ci_failure: CiFailureContext | None = None
 
     @field_validator("base_revision")
     @classmethod
@@ -133,6 +137,9 @@ class FinalReport(StrictModel):
     duration_seconds: int
     repair_rounds: int
     error: ErrorInfo | None
+    diagnosis_ref: ArtifactRef | None = None
+    local_validation_passed: bool | None = None
+    remote_ci_status: Literal["not_verified"] = "not_verified"
 
 
 class CleanupReport(StrictModel):

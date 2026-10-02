@@ -39,6 +39,8 @@ class ArtifactKind(str, Enum):
     TEST_PLAN = "test_plan"
     TEST_BUNDLE = "test_bundle"
     BASELINE_REPORT = "baseline_report"
+    CI_EVIDENCE = "ci_evidence"
+    CI_DIAGNOSIS = "ci_diagnosis"
     SEALED_TEST_BASELINE_REPORT = "sealed_test_baseline_report"
     VERIFICATION_REPORT = "verification_report"
     REVIEW_DECISION = "review_decision"

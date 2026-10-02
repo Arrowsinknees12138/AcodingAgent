@@ -81,6 +81,7 @@ class BaselineReport(StrictModel):
     command: tuple[str, ...]
     summary: TestSummary
     details_ref: ArtifactRef
+    diagnosis_ref: ArtifactRef | None = None
 
 
 class SealedTestBaselineReport(StrictModel):
