@@ -226,9 +226,7 @@ async def test_planner_produces_validated_change_plan_artifact() -> None:
         update={
             "files": (
                 *expected.files,
-                expected.files[0].model_copy(
-                    update={"path": "src/new.py", "operation": "create"}
-                ),
+                expected.files[0].model_copy(update={"path": "src/new.py", "operation": "create"}),
             ),
             "scope_expansion_reason": "The repair requires a helper absent from the first plan",
         }

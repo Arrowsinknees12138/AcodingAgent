@@ -50,9 +50,7 @@ def run_git_bytes(args: list[str], cwd: Path) -> bytes:
         },
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"git {args} failed: {result.stdout!r}\n{result.stderr!r}"
-        )
+        raise RuntimeError(f"git {args} failed: {result.stdout!r}\n{result.stderr!r}")
     return result.stdout
 
 
