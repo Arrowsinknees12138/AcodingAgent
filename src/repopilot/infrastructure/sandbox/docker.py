@@ -24,6 +24,7 @@ import io
 import json
 import shutil
 import tarfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,6 +40,7 @@ from repopilot.domain.policies import DependencyPolicy
 from repopilot.logging import get_logger
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.dependency_service import DependencyInstallPlan, plan_dependency_install
+from repopilot.services.sandbox_budget import SandboxBudgetStore
 from repopilot.services.sandbox_service import CommandResult, RunCommandRequest, SandboxSpec
 
 logger = get_logger(component="sandbox_service")
@@ -68,6 +70,7 @@ class DockerSandboxService:
         docker_client: docker.DockerClient | None = None,
         pypi_proxy_url: str = "http://pypi-proxy:3128",
         pypi_egress_network: str = "repopilot-pypi-egress",
+        budget_store: SandboxBudgetStore | None = None,
     ) -> None:
         self._sandboxes_dir = data_dir / "sandboxes"
         self._dependency_layers_dir = data_dir / "dependency-layers"
@@ -82,6 +85,7 @@ class DockerSandboxService:
         self._pypi_egress_network = pypi_egress_network
         self._handles: dict[UUID, _SandboxHandle] = {}
         self._dependency_locks: dict[str, asyncio.Lock] = {}
+        self._budget_store = budget_store
 
     def _caller(self, run_id: UUID) -> ArtifactCaller:
         return ArtifactCaller(
@@ -109,7 +113,34 @@ class DockerSandboxService:
         async with lock:
             if complete_marker.exists():
                 return key
-            await asyncio.to_thread(self._build_dependency_layer, key, source, plan)
+            granted = (
+                await self._budget_store.reserve(source_archive_ref.run_id, 600)
+                if self._budget_store
+                else None
+            )
+            started = time.monotonic()
+            try:
+                await asyncio.to_thread(
+                    self._build_dependency_layer,
+                    key,
+                    source,
+                    plan,
+                    granted,
+                    source_archive_ref.run_id,
+                )
+            except asyncio.CancelledError:
+                # Thread may still be running. Cleanup discovers its run label; keep reservation.
+                raise
+            finally:
+                task = asyncio.current_task()
+                if (
+                    granted is not None
+                    and self._budget_store
+                    and (task is not None and not task.cancelling())
+                ):
+                    await self._budget_store.settle(
+                        source_archive_ref.run_id, granted, int((time.monotonic() - started) * 1000)
+                    )
         return key
 
     def _build_dependency_layer(
@@ -117,6 +148,8 @@ class DockerSandboxService:
         key: str,
         source: bytes,
         plan: DependencyInstallPlan,
+        granted_seconds: int | None = None,
+        run_id: UUID | None = None,
     ) -> None:
         build_root = self._dependency_layers_dir / f".build-{key}-{uuid4().hex[:8]}"
         workspace_dir = build_root / "workspace"
@@ -161,14 +194,24 @@ class DockerSandboxService:
             tmpfs={"/tmp": "size=2048m"},  # noqa: S108 - container-only tmpfs
             working_dir="/workspace",
             environment=environment,
-            labels={"repopilot.dependency_layer": key},
+            labels={
+                "repopilot.dependency_layer": key,
+                **({"repopilot.run_id": str(run_id)} if run_id else {}),
+            },
             auto_remove=False,
         )
         build_error: Exception | None = None
+        deadline = time.monotonic() + granted_seconds if granted_seconds is not None else None
+
+        def run_build(command: list[str]) -> None:
+            timeout_seconds = max(1, int(deadline - time.monotonic())) if deadline else 900
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("dependency build budget exceeded")
+            self._run_build_command(container, command, timeout_seconds)
+
         try:
-            self._run_build_command(container, ["python", "-m", "venv", "/deps"])
-            self._run_build_command(
-                container,
+            run_build(["python", "-m", "venv", "/deps"])
+            run_build(
                 [
                     "/deps/bin/python",
                     "-m",
@@ -181,8 +224,7 @@ class DockerSandboxService:
                 ],
             )
             if plan.manager == "uv":
-                self._run_build_command(
-                    container,
+                run_build(
                     [
                         "/deps/bin/python",
                         "-m",
@@ -195,13 +237,12 @@ class DockerSandboxService:
                     ],
                 )
                 assert plan.command is not None
-                self._run_build_command(container, ["/deps/bin/uv", *plan.command.args])
+                run_build(["/deps/bin/uv", *plan.command.args])
             elif plan.command is not None:
-                self._run_build_command(
-                    container,
+                run_build(
                     ["/deps/bin/python", *plan.command.args],
                 )
-            self._run_build_command(container, ["rm", "-f", "/deps/lib64"])
+            run_build(["rm", "-f", "/deps/lib64"])
         except Exception as exc:  # cleanup must happen after the container releases bind mounts
             build_error = exc
         finally:
@@ -227,9 +268,11 @@ class DockerSandboxService:
         shutil.rmtree(build_root, ignore_errors=True)
 
     @staticmethod
-    def _run_build_command(container: Container, command: list[str]) -> None:
+    def _run_build_command(
+        container: Container, command: list[str], timeout_seconds: int = 900
+    ) -> None:
         result = container.exec_run(
-            ["timeout", "--kill-after=5s", "900s", *command],
+            ["timeout", "--kill-after=5s", f"{timeout_seconds}s", *command],
             workdir="/workspace",
             demux=True,
             user="65534:65534",
@@ -320,6 +363,24 @@ class DockerSandboxService:
         return sandbox_id
 
     async def execute(self, sandbox_id: UUID, request: RunCommandRequest) -> CommandResult:
+        handle = self._handles[sandbox_id]
+        granted = (
+            await self._budget_store.reserve(handle.run_id, request.timeout_seconds)
+            if self._budget_store
+            else None
+        )
+        if granted is not None:
+            request = request.model_copy(update={"timeout_seconds": granted})
+        started = datetime.now(UTC)
+        # On an interrupted or unknown execution keep the reservation: fail closed.
+        result = await self._execute(sandbox_id, request)
+        if granted is not None and self._budget_store is not None:
+            await self._budget_store.settle(
+                handle.run_id, granted, int((datetime.now(UTC) - started).total_seconds() * 1000)
+            )
+        return result
+
+    async def _execute(self, sandbox_id: UUID, request: RunCommandRequest) -> CommandResult:
         handle = self._handles[sandbox_id]
         self._validate_cwd(request.cwd)
 

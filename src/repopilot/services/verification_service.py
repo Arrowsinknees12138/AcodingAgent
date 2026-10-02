@@ -15,6 +15,7 @@ from repopilot.domain.artifacts import (
     ArtifactRef,
     RepositorySnapshot,
 )
+from repopilot.domain.ci import CiDiagnosisReport
 from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.verification import (
     BaselineReport,
@@ -25,6 +26,7 @@ from repopilot.domain.verification import (
     VerificationReport,
 )
 from repopilot.services.artifact_store import ArtifactStore
+from repopilot.services.ci_diagnosis import parse_pytest, protected_files
 from repopilot.services.sandbox_service import (
     CommandResult,
     RunCommandRequest,
@@ -403,11 +405,57 @@ class CandidateVerificationService:
             await self._artifact_store.get_bytes(baseline_report_ref, caller)
         )
         source = await self._artifact_store.get_bytes(candidate_source_ref, caller)
-        command = discover_test_command(
-            snapshot,
-            inspect_source_archive(source),
-            timeout_seconds=self._timeout_seconds,
-        )
+        diagnosis: CiDiagnosisReport | None = None
+        if baseline.diagnosis_ref is not None:
+            diagnosis = CiDiagnosisReport.model_validate_json(
+                await self._artifact_store.get_bytes(baseline.diagnosis_ref, caller)
+            )
+            if protected_files(source) != diagnosis.protected_hashes:
+                report = VerificationReport(
+                    candidate_revision=candidate_revision,
+                    baseline_report_ref=baseline_report_ref,
+                    passed=False,
+                    findings=(
+                        VerificationFinding(
+                            finding_id=uuid4(),
+                            file_path=None,
+                            severity="blocker",
+                            category="correctness",
+                            message="Original tests/config changed; candidate was not executed",
+                        ),
+                    ),
+                    baseline_summary=baseline.summary,
+                    candidate_summary=TestSummary(
+                        passed=0, failed=0, skipped=0, failed_test_ids=()
+                    ),
+                    regression_test_ids=(),
+                    regression_count=0,
+                    stdout_ref=None,
+                )
+                return await self._artifact_store.put_bytes(
+                    ArtifactKind.VERIFICATION_REPORT,
+                    report.model_dump_json().encode(),
+                    ArtifactMetadata(
+                        tenant_id=candidate_source_ref.tenant_id,
+                        run_id=candidate_source_ref.run_id,
+                        base_revision=candidate_revision,
+                        schema_version="1",
+                        input_artifact_ids=(
+                            baseline_report_ref.artifact_id,
+                            candidate_source_ref.artifact_id,
+                        ),
+                    ),
+                )
+            command = RunCommandRequest(
+                executable="python",
+                args=baseline.command[1:],
+                cwd="/workspace",
+                timeout_seconds=self._timeout_seconds,
+            )
+        else:
+            command = discover_test_command(
+                snapshot, inspect_source_archive(source), timeout_seconds=self._timeout_seconds
+            )
         sandbox_id = await self._sandbox.create(
             SandboxSpec(
                 run_id=snapshot_ref.run_id,
@@ -473,6 +521,38 @@ class CandidateVerificationService:
             )
             for result, summary in zip(results, summaries, strict=True)
         )
+        if diagnosis is not None:
+            assert diagnosis.source is not None
+            output = (await self._artifact_store.get_bytes(results[0].stdout_ref, caller)).decode(
+                "utf-8", errors="replace"
+            )
+            observed, _ = parse_pytest(output)
+            original = diagnosis.observations[0].outcomes
+            violations = [
+                f"CI target did not become PASSED: {node}"
+                for node in diagnosis.source.target_test_ids
+                if observed.get(node) != "passed"
+            ]
+            if original.keys() != observed.keys():
+                violations.append(
+                    "Original pytest collection changed (missing or additional test IDs)"
+                )
+            violations.extend(
+                f"Previously passing test changed outcome: {node}"
+                for node, outcome in original.items()
+                if outcome == "passed" and observed.get(node) != "passed"
+            )
+            findings += tuple(
+                VerificationFinding(
+                    finding_id=uuid4(),
+                    file_path=None,
+                    severity="blocker",
+                    category="test",
+                    message=message,
+                )
+                for message in violations
+            )
+            passed = passed and not violations
         combined_log_ref = await self._combine_logs(results, caller, candidate_source_ref)
         report = VerificationReport(
             candidate_revision=candidate_revision,

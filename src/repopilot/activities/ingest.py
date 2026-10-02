@@ -105,6 +105,7 @@ class IngestActivities:
                 "dependency_policy": request.dependency_policy,
                 "qa": request.qa,
                 "risk_level": request.risk_level,
+                "ci_failure": request.ci_failure,
             }
         )
         return await self._artifacts.put_bytes(

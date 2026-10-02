@@ -13,8 +13,10 @@ from repopilot.domain.artifacts import ArtifactCaller, ArtifactMetadata, Artifac
 from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.errors import ErrorInfo
 from repopilot.domain.tasks import CleanupReport, FinalReport
+from repopilot.domain.verification import VerificationReport
 from repopilot.services.artifact_store import ArtifactStore
 from repopilot.services.model_gateway import ModelUsageReader, ModelUsageTotals
+from repopilot.services.sandbox_budget import SandboxBudgetStore
 
 
 class BuildFinalReportInput(StrictModel):
@@ -35,6 +37,7 @@ class BuildFinalReportInput(StrictModel):
     sandbox_seconds: int = 0
     repair_rounds: int = 0
     error: ErrorInfo | None = None
+    diagnosis_ref: ArtifactRef | None = None
 
 
 class FinalizationActivities:
@@ -43,9 +46,11 @@ class FinalizationActivities:
         *,
         artifact_store: ArtifactStore,
         usage_reader: ModelUsageReader | None = None,
+        sandbox_budget_store: SandboxBudgetStore | None = None,
     ) -> None:
         self._artifacts = artifact_store
         self._usage_reader = usage_reader
+        self._sandbox_budget = sandbox_budget_store
 
     @activity.defn(name="build_final_report")
     async def build_final_report(self, payload: BuildFinalReportInput) -> ArtifactRef:
@@ -57,6 +62,7 @@ class FinalizationActivities:
                 payload.review_ref,
                 payload.repository_cleanup_ref,
                 payload.sandbox_cleanup_ref,
+                payload.diagnosis_ref,
             )
             if ref is not None
         )
@@ -93,12 +99,32 @@ class FinalizationActivities:
         changed_paths = await self._changed_paths(payload)
         usage = await self._usage(payload)
         warnings = list(payload.warnings)
-        if payload.sandbox_seconds == 0:
+        sandbox_seconds = payload.sandbox_seconds
+        sandbox_usage = (
+            await self._sandbox_budget.usage(payload.run_id) if self._sandbox_budget else None
+        )
+        if sandbox_usage is not None:
+            sandbox_seconds = (sandbox_usage[0] + 999) // 1000
+            if sandbox_usage[1]:
+                warnings.append("Interrupted reservations remain charged; completion time unknown")
+        elif payload.sandbox_seconds == 0:
             warnings.append("sandbox execution time is not yet measured across activities")
         if usage.unknown_calls:
             warnings.append(
                 f"{usage.unknown_calls} model call(s) have unknown completion or billing state"
             )
+        local_passed: bool | None = None
+        if payload.diagnosis_ref is not None and payload.verification_ref is not None:
+            caller = ArtifactCaller(
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                role=None,
+                service="finalization",
+            )
+            verified = VerificationReport.model_validate_json(
+                await self._artifacts.get_bytes(payload.verification_ref, caller)
+            )
+            local_passed = verified.passed
         report = FinalReport(
             run_id=payload.run_id,
             status=payload.status,
@@ -115,12 +141,14 @@ class FinalizationActivities:
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             model_cost_usd=usage.cost_usd,
-            sandbox_seconds=payload.sandbox_seconds,
+            sandbox_seconds=sandbox_seconds,
             duration_seconds=max(
                 0, int((payload.finished_at - payload.started_at).total_seconds())
             ),
             repair_rounds=payload.repair_rounds,
             error=payload.error,
+            diagnosis_ref=payload.diagnosis_ref,
+            local_validation_passed=local_passed,
         )
         return await self._artifacts.put_bytes(
             ArtifactKind.FINAL_REPORT,

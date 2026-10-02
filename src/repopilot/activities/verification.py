@@ -7,7 +7,14 @@ from uuid import UUID
 from temporalio import activity
 
 from repopilot.domain import StrictModel
-from repopilot.domain.artifacts import ArtifactCaller, ArtifactRef, RepositorySnapshot
+from repopilot.domain.artifacts import (
+    ArtifactCaller,
+    ArtifactMetadata,
+    ArtifactRef,
+    RepositorySnapshot,
+)
+from repopilot.domain.ci import CiDiagnosisReport
+from repopilot.domain.enums import ArtifactKind
 from repopilot.domain.tasks import TaskSpec
 from repopilot.domain.verification import (
     SealedTestBaselineReport,
@@ -15,6 +22,7 @@ from repopilot.domain.verification import (
     VerificationReport,
 )
 from repopilot.services.artifact_store import ArtifactStore
+from repopilot.services.ci_diagnosis import CiDiagnosisService
 from repopilot.services.sandbox_service import SandboxService
 from repopilot.services.verification_service import (
     BaselineVerificationService,
@@ -64,6 +72,20 @@ class VerifyBaselineInput(StrictModel):
     dependency_layer_key: str
 
 
+class DiagnoseCiInput(StrictModel):
+    snapshot_ref: ArtifactRef
+    task_spec_ref: ArtifactRef
+    dependency_layer_key: str = ""
+
+
+class DiagnoseCiResult(StrictModel):
+    diagnosis_ref: ArtifactRef
+    baseline_ref: ArtifactRef | None
+    dependency_layer_key: str = ""
+    repair_eligible: bool
+    diagnose_only: bool
+
+
 class VerificationActivities:
     def __init__(
         self,
@@ -100,9 +122,78 @@ class VerificationActivities:
         )
         key = await self._sandbox.prepare_dependencies(
             snapshot.source_archive_ref,
-            task.dependency_policy,
+            (
+                task.dependency_policy.model_copy(update={"include_test_dependencies": True})
+                if task.ci_failure
+                else task.dependency_policy
+            ),
         )
         return PrepareDependenciesResult(dependency_layer_key=key)
+
+    @activity.defn(name="diagnose_ci_failure")
+    async def diagnose_ci(self, payload: DiagnoseCiInput) -> DiagnoseCiResult:
+        if self._artifacts is None or self._sandbox is None:
+            raise RuntimeError("CI diagnosis is not configured")
+        caller = ArtifactCaller(
+            tenant_id=payload.task_spec_ref.tenant_id,
+            run_id=payload.task_spec_ref.run_id,
+            role=None,
+            service="verification",
+        )
+        task = TaskSpec.model_validate_json(
+            await self._artifacts.get_bytes(payload.task_spec_ref, caller)
+        )
+        assert task.ci_failure is not None
+        key = payload.dependency_layer_key
+        if not key:
+            snapshot = RepositorySnapshot.model_validate_json(
+                await self._artifacts.get_bytes(payload.snapshot_ref, caller)
+            )
+            try:
+                key = await self._sandbox.prepare_dependencies(
+                    snapshot.source_archive_ref,
+                    task.dependency_policy.model_copy(update={"include_test_dependencies": True}),
+                )
+            except (RuntimeError, ValueError) as exc:
+                from repopilot.services.sandbox_budget import SandboxBudgetExceeded
+
+                if isinstance(exc, SandboxBudgetExceeded):
+                    raise
+                environment_report = CiDiagnosisReport(
+                    category="environment_failure",
+                    repair_eligible=False,
+                    reasons=(
+                        "Dependency build failed; check manifests and supported install policy",
+                    ),
+                    source=task.ci_failure,
+                    evidence_ref=task.ci_failure.evidence_ref,
+                )
+                ref = await self._artifacts.put_bytes(
+                    ArtifactKind.CI_DIAGNOSIS,
+                    environment_report.model_dump_json().encode(),
+                    ArtifactMetadata(
+                        tenant_id=task.tenant_id,
+                        run_id=task.run_id,
+                        base_revision=task.base_revision,
+                        schema_version="1",
+                    ),
+                )
+                return DiagnoseCiResult(
+                    diagnosis_ref=ref,
+                    baseline_ref=None,
+                    repair_eligible=False,
+                    diagnose_only=task.ci_failure.mode == "diagnose",
+                )
+        diagnosis, baseline, eligible = await CiDiagnosisService(
+            artifact_store=self._artifacts, sandbox_service=self._sandbox
+        ).diagnose(payload.snapshot_ref, task.ci_failure, key)
+        return DiagnoseCiResult(
+            diagnosis_ref=diagnosis,
+            baseline_ref=baseline,
+            repair_eligible=eligible,
+            diagnose_only=task.ci_failure.mode == "diagnose",
+            dependency_layer_key=key,
+        )
 
     @activity.defn(name="verify_baseline")
     async def verify_baseline(self, payload: VerifyBaselineInput) -> ArtifactRef:

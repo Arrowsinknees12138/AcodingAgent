@@ -17,6 +17,7 @@ from repopilot.domain.enums import ArtifactKind, RunStatus
 from repopilot.domain.tasks import CreateRunRequest
 from repopilot.infrastructure.db.model_budget import PostgresModelBudgetStore
 from repopilot.infrastructure.db.models import Artifact, AuditEvent, IdempotencyKey, RunProjection
+from repopilot.infrastructure.db.sandbox_budget import PostgresSandboxBudgetStore
 from repopilot.infrastructure.temporal.client import (
     start_code_repair_workflow,
     workflow_id_for,
@@ -92,8 +93,16 @@ class PostgresTemporalRunControl(RunControl):
             shared_blackboard_enabled=True,
             reviewer_agent_mode=True,
             scope_expansion_enabled=True,
+            ci_import_enabled=request.ci_import is not None,
+            wall_timeout_seconds=(
+                request.budget.max_wall_time_seconds if request.ci_import else None
+            ),
         )
         try:
+            if request.ci_import is not None:
+                await PostgresSandboxBudgetStore(self._session_factory).initialize(
+                    self._tenant_id, run_id, request.budget.max_sandbox_seconds
+                )
             await self._model_budget_initializer.create_budget(
                 run_id=run_id,
                 tenant_id=self._tenant_id,

@@ -56,6 +56,7 @@ class DependencyPolicy(StrictModel):
     allow_lockfile_read: bool = True
     allow_cache: bool = True
     allow_new_dependencies: bool = False
+    include_test_dependencies: bool = False
 
     @model_validator(mode="after")
     def _fixed_security_baseline(self) -> DependencyPolicy:

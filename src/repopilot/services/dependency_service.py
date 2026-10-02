@@ -50,12 +50,29 @@ def plan_dependency_install(
     if uv_lock is not None:
         _validate_uv_lock(uv_lock)
         _validate_pyproject_sources(pyproject)
+        test_args: tuple[str, ...] = ()
+        if policy.include_test_dependencies:
+            groups = pyproject.get("dependency-groups", {})
+            if isinstance(groups, dict):
+                test_args = tuple(
+                    arg
+                    for group in ("test", "tests")
+                    if group in groups
+                    for arg in ("--group", group)
+                )
         return DependencyInstallPlan(
             manager="uv",
             manifest_path="uv.lock",
             command=DependencyInstallCommand(
                 executable="uv",
-                args=("sync", "--frozen", "--no-dev", "--index-url", policy.index_url),
+                args=(
+                    "sync",
+                    "--frozen",
+                    *(("--no-dev",) if not policy.include_test_dependencies else ()),
+                    *test_args,
+                    "--index-url",
+                    policy.index_url,
+                ),
             ),
             frozen=True,
             cache_enabled=policy.allow_cache,
@@ -71,6 +88,13 @@ def plan_dependency_install(
     )
     if requirements_path is not None:
         _validate_requirements(manifests[requirements_path], requirements_path)
+        test_requirements = tuple(
+            path
+            for path in ("requirements-dev.txt", "requirements-test.txt")
+            if policy.include_test_dependencies and path in manifests
+        )
+        for path in test_requirements:
+            _validate_requirements(manifests[path], path)
         return DependencyInstallPlan(
             manager="pip",
             manifest_path=requirements_path,
@@ -85,6 +109,7 @@ def plan_dependency_install(
                     policy.index_url,
                     "--requirement",
                     requirements_path,
+                    *(arg for path in test_requirements for arg in ("--requirement", path)),
                 ),
             ),
             frozen=_requirements_are_hashed(manifests[requirements_path]),
@@ -92,6 +117,18 @@ def plan_dependency_install(
         )
 
     dependencies = _project_dependencies(pyproject)
+    enabled_extras: list[str] = []
+    if policy.include_test_dependencies:
+        project = pyproject.get("project", {})
+        extras = project.get("optional-dependencies", {}) if isinstance(project, dict) else {}
+        if isinstance(extras, dict):
+            for group in ("dev", "test", "tests"):
+                values = extras.get(group, [])
+                if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                    raise DependencyManifestError("Invalid test extras")
+                dependencies += tuple(values)
+                if values:
+                    enabled_extras.append(group)
     if dependencies:
         _validate_pep508_dependencies(dependencies)
         _validate_pyproject_sources(pyproject)
@@ -107,7 +144,7 @@ def plan_dependency_install(
                     "--only-binary=:all:",
                     "--index-url",
                     policy.index_url,
-                    ".",
+                    "." + (f"[{','.join(enabled_extras)}]" if enabled_extras else ""),
                 ),
             ),
             frozen=False,
@@ -130,7 +167,13 @@ def _read_manifests(source_archive: bytes) -> dict[str, bytes]:
             for member in archive.getmembers():
                 path = member.name.replace("\\", "/").removeprefix("./")
                 name = path.rsplit("/", 1)[-1].lower()
-                wanted = name in {"pyproject.toml", "uv.lock", "requirements.txt"}
+                wanted = name in {
+                    "pyproject.toml",
+                    "uv.lock",
+                    "requirements.txt",
+                    "requirements-dev.txt",
+                    "requirements-test.txt",
+                }
                 if not member.isfile() or not wanted:
                     continue
                 if member.size > 4 * 1024 * 1024:

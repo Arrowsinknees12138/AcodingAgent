@@ -20,6 +20,7 @@ from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
 
 from repopilot.activities.blackboard import BlackboardActivities, PublishBlackboardInput
+from repopilot.activities.ci import CiActivities
 from repopilot.activities.developer import (
     DevelopAgentPatchInput,
     DeveloperActivities,
@@ -38,7 +39,9 @@ from repopilot.activities.repository import (
 )
 from repopilot.activities.reviewer import ReviewCandidateInput, ReviewerActivities
 from repopilot.activities.verification import (
+    DiagnoseCiInput,
     PrepareDependenciesInput,
+    PrepareDependenciesResult,
     VerificationActivities,
     VerifyBaselineInput,
     VerifyCandidateInput,
@@ -95,6 +98,8 @@ class CodeRepairWorkflowInput(StrictModel):
     # Temporal 输入会保存在不可变 History 中；保留旧字段兼容已经启动的 Run。
     # 新调用方不应再传它。False 等价于额外要求 delivery 人工审批。
     auto_approve_low_risk: bool | None = None
+    ci_import_enabled: bool = False
+    wall_timeout_seconds: int | None = None
 
 
 class CodeRepairWorkflowOutput(StrictModel):
@@ -126,9 +131,28 @@ class CodeRepairWorkflow:
         self._verification_ref: ArtifactRef | None = None
         self._review_ref: ArtifactRef | None = None
         self._repair_rounds = 0
+        self._diagnosis_ref: ArtifactRef | None = None
 
     @workflow.run
     async def run(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
+        if workflow_input.wall_timeout_seconds is None:
+            return await self._execute(workflow_input)
+        try:
+            return await asyncio.wait_for(
+                self._execute(workflow_input), timeout=workflow_input.wall_timeout_seconds
+            )
+        except TimeoutError:
+            return await asyncio.shield(
+                self._finalize(
+                    workflow_input,
+                    RunStatus.FAILED,
+                    error=self._error(
+                        ErrorCode.BUDGET_EXCEEDED, "Global execution deadline exceeded"
+                    ),
+                )
+            )
+
+    async def _execute(self, workflow_input: CodeRepairWorkflowInput) -> CodeRepairWorkflowOutput:
         self._workflow_id = workflow.info().workflow_id
         self._started_at = workflow.now()
         await self._record_projection(workflow_input)  # 记录初始 QUEUED
@@ -137,9 +161,32 @@ class CodeRepairWorkflow:
             # ingest/scan/baseline 已是真实 Activity；后半段角色 Activity 会在
             # 产物协议齐备后逐项替换状态占位。
             await self._transition(workflow_input, RunStatus.INGESTING)
+            request_ref = workflow_input.create_request_ref
+            if workflow_input.ci_import_enabled:
+                collected = await workflow.execute_activity_method(
+                    CiActivities.collect,
+                    request_ref,
+                    task_queue=REPOSITORY_TASK_QUEUE,
+                    start_to_close_timeout=timedelta(minutes=2),
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                )
+                self._base_revision = collected.base_revision
+                self._repository_url = collected.repository_url
+                self._diagnosis_ref = collected.diagnosis_ref
+                if not collected.ready:
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(
+                            ErrorCode.CI_NOT_REPAIRABLE,
+                            "CI evidence is not repairable",
+                            collected.diagnosis_ref,
+                        ),
+                    )
+                request_ref = collected.request_ref
             ingest_result = await workflow.execute_activity_method(
                 IngestActivities.ingest_task,
-                workflow_input.create_request_ref,
+                request_ref,
                 task_queue=REPOSITORY_TASK_QUEUE,
                 start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
@@ -163,7 +210,7 @@ class CodeRepairWorkflow:
                 task_spec_ref = await workflow.execute_activity_method(
                     IngestActivities.finalize_task_spec,
                     FinalizeTaskSpecInput(
-                        create_request_ref=workflow_input.create_request_ref,
+                        create_request_ref=request_ref,
                         base_revision=ingest_result.base_revision,
                         acceptance_criteria=approval.replacement_acceptance_criteria,
                     ),
@@ -180,27 +227,55 @@ class CodeRepairWorkflow:
                 start_to_close_timeout=_REPOSITORY_START_TO_CLOSE,
                 retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
             )
-            dependency_result = await workflow.execute_activity_method(
-                VerificationActivities.prepare_dependencies,
-                PrepareDependenciesInput(
-                    snapshot_ref=snapshot_ref,
-                    task_spec_ref=task_spec_ref,
-                ),
-                task_queue=SANDBOX_TASK_QUEUE,
-                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
-            await self._transition(workflow_input, RunStatus.BASELINING)
-            baseline_report_ref = await workflow.execute_activity_method(
-                VerificationActivities.verify_baseline,
-                VerifyBaselineInput(
-                    snapshot_ref=snapshot_ref,
-                    dependency_layer_key=dependency_result.dependency_layer_key,
-                ),
-                task_queue=SANDBOX_TASK_QUEUE,
-                start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
-                retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
-            )
+            if workflow_input.ci_import_enabled:
+                await self._transition(workflow_input, RunStatus.BASELINING)
+                diagnosis = await workflow.execute_activity_method(
+                    VerificationActivities.diagnose_ci,
+                    DiagnoseCiInput(snapshot_ref=snapshot_ref, task_spec_ref=task_spec_ref),
+                    task_queue=SANDBOX_TASK_QUEUE,
+                    start_to_close_timeout=timedelta(minutes=30),
+                    retry_policy=_MODEL_ACTIVITY_RETRY_POLICY,
+                )
+                self._diagnosis_ref = diagnosis.diagnosis_ref
+                if not diagnosis.repair_eligible:
+                    return await self._finalize(
+                        workflow_input,
+                        RunStatus.REJECTED,
+                        error=self._error(
+                            ErrorCode.CI_NOT_REPAIRABLE,
+                            "CI failure did not pass reproduction gate",
+                            diagnosis.diagnosis_ref,
+                        ),
+                    )
+                if diagnosis.diagnose_only:
+                    return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
+                assert diagnosis.baseline_ref is not None
+                baseline_report_ref = diagnosis.baseline_ref
+                dependency_result = PrepareDependenciesResult(
+                    dependency_layer_key=diagnosis.dependency_layer_key
+                )
+            else:
+                dependency_result = await workflow.execute_activity_method(
+                    VerificationActivities.prepare_dependencies,
+                    PrepareDependenciesInput(
+                        snapshot_ref=snapshot_ref,
+                        task_spec_ref=task_spec_ref,
+                    ),
+                    task_queue=SANDBOX_TASK_QUEUE,
+                    start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                )
+                await self._transition(workflow_input, RunStatus.BASELINING)
+                baseline_report_ref = await workflow.execute_activity_method(
+                    VerificationActivities.verify_baseline,
+                    VerifyBaselineInput(
+                        snapshot_ref=snapshot_ref,
+                        dependency_layer_key=dependency_result.dependency_layer_key,
+                    ),
+                    task_queue=SANDBOX_TASK_QUEUE,
+                    start_to_close_timeout=_SANDBOX_START_TO_CLOSE,
+                    retry_policy=_SERVICE_ACTIVITY_RETRY_POLICY,
+                )
             await self._transition(workflow_input, RunStatus.PLANNING)
             planner_agent_mode = workflow_input.planner_agent_mode and workflow.patched(
                 "planner-agent-loop-v1"
@@ -475,11 +550,21 @@ class CodeRepairWorkflow:
                 )
             return await self._finalize(workflow_input, RunStatus.SUCCEEDED)
         except (asyncio.CancelledError, temporalio.exceptions.CancelledError):
+            deadline_hit = (
+                workflow_input.wall_timeout_seconds is not None
+                and self._started_at is not None
+                and (workflow.now() - self._started_at).total_seconds()
+                >= workflow_input.wall_timeout_seconds
+                and workflow.cancellation_reason() is None
+            )
             return await asyncio.shield(
                 self._finalize(
                     workflow_input,
-                    RunStatus.CANCELLED,
-                    error=self._error(ErrorCode.WORKFLOW_CANCELLED, "workflow cancelled"),
+                    RunStatus.FAILED if deadline_hit else RunStatus.CANCELLED,
+                    error=self._error(
+                        ErrorCode.BUDGET_EXCEEDED if deadline_hit else ErrorCode.WORKFLOW_CANCELLED,
+                        "Global deadline exceeded" if deadline_hit else "workflow cancelled",
+                    ),
                 )
             )
         except Exception as exc:
@@ -508,6 +593,7 @@ class CodeRepairWorkflow:
                 "BUDGET_EXCEEDED": ErrorCode.BUDGET_EXCEEDED,
                 "MODEL_COMPLETION_UNKNOWN": ErrorCode.MODEL_COMPLETION_UNKNOWN,
                 "POLICY_DENIED": ErrorCode.POLICY_DENIED,
+                "SandboxBudgetExceeded": ErrorCode.BUDGET_EXCEEDED,
                 "DEVELOPER_OUTPUT_INVALID": ErrorCode.MODEL_OUTPUT_INVALID,
             }
             code = known.get(exc.cause.type or "")
@@ -831,6 +917,7 @@ class CodeRepairWorkflow:
                 finished_at=workflow.now(),
                 repair_rounds=self._repair_rounds,
                 error=error,
+                diagnosis_ref=self._diagnosis_ref,
             ),
             start_to_close_timeout=_PROJECTION_START_TO_CLOSE,
             schedule_to_start_timeout=_PROJECTION_SCHEDULE_TO_START,

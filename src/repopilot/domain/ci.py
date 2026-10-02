@@ -64,8 +64,8 @@ class CiFailureContext(StrictModel):
     @field_validator("target_test_ids")
     @classmethod
     def _safe_nodes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        if not values or len(values) > 100:
-            raise ValueError("CI requires 1..100 target test IDs")
+        if not values or len(values) > 98:
+            raise ValueError("CI requires 1..98 target test IDs")
         for value in values:
             path = value.split("::", 1)[0]
             if (

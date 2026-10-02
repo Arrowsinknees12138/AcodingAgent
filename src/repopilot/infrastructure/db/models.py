@@ -99,6 +99,20 @@ class RunBudget(Base):
     )
 
 
+class SandboxBudget(Base):
+    __tablename__ = "sandbox_budgets"
+
+    run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    max_ms: Mapped[int] = mapped_column()
+    consumed_ms: Mapped[int] = mapped_column(default=0)
+    reserved_ms: Mapped[int] = mapped_column(default=0)
+    __table_args__ = (
+        CheckConstraint("max_ms > 0 and consumed_ms >= 0 and reserved_ms >= 0",
+                        name="ck_sandbox_budget_nonnegative"),
+    )
+
+
 class WorkItemProjection(Base):
     __tablename__ = "work_item_projections"
 

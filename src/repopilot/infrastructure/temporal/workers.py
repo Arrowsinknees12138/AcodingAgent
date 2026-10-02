@@ -14,6 +14,7 @@ import sys
 from temporalio.worker import Worker
 
 from repopilot.activities.blackboard import BlackboardActivities
+from repopilot.activities.ci import CiActivities
 from repopilot.activities.developer import DeveloperActivities
 from repopilot.activities.finalization import FinalizationActivities
 from repopilot.activities.ingest import IngestActivities
@@ -29,7 +30,9 @@ from repopilot.infrastructure.artifacts.minio import MinioArtifactStore, build_m
 from repopilot.infrastructure.db.engine import get_session_factory
 from repopilot.infrastructure.db.model_budget import PostgresModelBudgetStore
 from repopilot.infrastructure.db.run_projection import PostgresRunProjectionStore
+from repopilot.infrastructure.db.sandbox_budget import PostgresSandboxBudgetStore
 from repopilot.infrastructure.git.repository_service import GitRepositoryService
+from repopilot.infrastructure.github import GitHubActionsReader
 from repopilot.infrastructure.model.openai_compatible import OpenAICompatibleProvider
 from repopilot.infrastructure.sandbox.docker import DockerSandboxService
 from repopilot.infrastructure.temporal.client import connect
@@ -75,6 +78,7 @@ async def _run_orchestration_worker() -> None:
     finalization = FinalizationActivities(
         artifact_store=artifacts,
         usage_reader=PostgresModelBudgetStore(get_session_factory()),
+        sandbox_budget_store=PostgresSandboxBudgetStore(get_session_factory()),
     )
 
     worker = Worker(
@@ -99,10 +103,17 @@ async def _run_repository_worker() -> None:
     )
     ingest = IngestActivities(artifact_store=artifacts, repository=repository)
     repository_activities = RepositoryActivities(artifact_store=artifacts, repository=repository)
+    ci = CiActivities(
+        artifacts,
+        GitHubActionsReader(
+            token=settings.github_token.get_secret_value() if settings.github_token else None
+        ),
+    )
     worker = Worker(
         client,
         task_queue=REPOSITORY_TASK_QUEUE,
         activities=[
+            ci.collect,
             ingest.ingest_task,
             ingest.finalize_task_spec,
             repository_activities.scan_repository,
@@ -129,6 +140,7 @@ async def _run_sandbox_worker() -> None:
         tenant_id=settings.local_tenant_id,
         pypi_proxy_url=settings.pypi_proxy_url,
         pypi_egress_network=settings.pypi_egress_network,
+        budget_store=PostgresSandboxBudgetStore(get_session_factory()),
     )
     verification = VerificationActivities(
         BaselineVerificationService(artifact_store=artifacts, sandbox_service=sandbox),
@@ -143,6 +155,7 @@ async def _run_sandbox_worker() -> None:
         activities=[
             verification.prepare_dependencies,
             verification.verify_baseline,
+            verification.diagnose_ci,
             verification.verify_sealed_tests_on_base,
             verification.verify_candidate,
             verification.cleanup_sandboxes,
@@ -202,6 +215,7 @@ async def _run_model_worker() -> None:
             tenant_id=settings.local_tenant_id,
             pypi_proxy_url=settings.pypi_proxy_url,
             pypi_egress_network=settings.pypi_egress_network,
+            budget_store=PostgresSandboxBudgetStore(get_session_factory()),
         ),
     )
     reviewer = ReviewerActivities(
